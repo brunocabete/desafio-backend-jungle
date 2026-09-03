@@ -28,7 +28,8 @@ This is the **Jungle Gaming "distributed wagering processor" challenge**. The re
 
 - `bun run` needs `.env` at repo root (present locally, **gitignored**, not committed). It holds Postgres + AWS/Ministack credentials and `AWS_SQS_QUEUE`.
 - Services: `postgres` (postgres:18-alpine, healthchecked) and `ministack` (SQS emulator on `:4566`, healthchecked).
-- SQS queues are created once at ministack container startup by `docker/ministack/init/01-create-queues.sh`. **Current script creates non-FIFO queues named `app-events` / `app-events-dlq`, which contradicts the spec's `wager-transactions.fifo` / `wager-transactions-dlq.fifo` (§10).** If you implement to spec, update the init script (queue changes need a container recreate to take effect).
+- SQS queues (`wager-transactions.fifo` + `wager-transactions-dlq.fifo`, spec §10) are created once at ministack startup by `docker/ministack/init/01-create-queues.sh`, with a redrive policy (maxReceiveCount 5) on the main queue. **Queue changes require a ministack recreate**: `docker compose up -d --force-recreate ministack`. The compose `ministack` service injects `AWS_ENDPOINT_URL`/creds so init scripts can call the emulator.
+- The ministack image ships an old **aws-cli v1** that ignores the `AWS_ENDPOINT_URL` env var — the init script must pass `--endpoint-url` explicitly (it does). Hand-verifying queues: `docker compose exec ministack aws --endpoint-url=http://localhost:4566 sqs list-queues` (creds are baked into the service env).
 - Compose defaults (`app`/`app`) are overridden by the local `.env` (`myapp`/`secret`); these env vars are read by compose via `${VAR:-default}`.
 
 ## Architecture constraints (from SPECS.MD — inviolable, §5)

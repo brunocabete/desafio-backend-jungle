@@ -1,10 +1,11 @@
 import { NestFactory } from '@nestjs/core';
-import { AppModule, ObserveInstrument } from './app.module.js';
+import { AppModule } from './app.module.js';
+import { JsonLogger } from './common/logging/json.logger.js';
 
-async function bootstrap() {
+async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, {
-    instrument: ObserveInstrument,
+    logger: new JsonLogger(),
   });
   await app.listen(process.env.PORT ?? 3000);
 }
-await bootstrap();
+void bootstrap();

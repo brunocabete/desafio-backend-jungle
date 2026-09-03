@@ -27,6 +27,9 @@ services:
     restart: unless-stopped
     environment:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_ENDPOINT_URL: http://localhost:4566
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       PERSIST_STATE: "1"
     ports:
       - "${MINISTACK_PORT:-4566}:4566"
