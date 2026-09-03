@@ -11,7 +11,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 | 0 — Foundation | ✅ done |
 | 1 — Money and domain model | ✅ done (135 unit tests) |
 | 2 — DB schema, migrations, ORM | ✅ itens 1–3 e 5 done (migration inicial + teste de integração em DB limpo); item 4 adiado (forRoot na Fase 3) |
-| 3 — Application services & HTTP API | pending |
+| 3 — Application services & HTTP API | 🚧 item 1 done (forRoot + boot exige Postgres) |
 | 4 — SQS consumer + transactionality | pending |
 | 5 — Concurrency hardening | pending |
 | 6 — Observability | pending |
@@ -59,7 +59,7 @@ Goal: make the invariants from spec §6 real in PostgreSQL (§5.9), with **no Ne
 
 ## Phase 3 — Application services & HTTP API
 
-1. Register **`MikroOrmModule.forRoot(shared config)`** (Phase 2 config) + request-context middleware when repositories appear; app boot now requires Postgres.
+1. **✅ Register `MikroOrmModule.forRoot(shared config)`** (Phase 2 config) + request-context middleware when repositories appear; app boot now requires Postgres. (v7: `@mikro-orm/nestjs` regista o `RequestContext` automaticamente via `configure()`, salvo `registerRequestContext: false`.)
 2. Wallet use case: `POST /wallets` (create wallet; `OPENING` internal transaction + `CREDIT` ledger entry in the **same SQL transaction**; duplicate playerId+currency → conflict). Apply `DEFAULT_CURRENCY = BRL` at this boundary.
    - **OPENING is an internal channel (§6.3)** and must NOT go through the shared submit use case: `applyWagerTransaction` rejects OPENING on purpose. Wallet creation gets its own path that persists the internal OPENING transaction + CREDIT ledger entry atomically.
 3. Wager transaction use case (**shared by HTTP and SQS — one code path**, spec §10):
