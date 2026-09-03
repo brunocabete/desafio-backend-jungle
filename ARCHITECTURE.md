@@ -23,6 +23,11 @@ Para transações que se derivam de outras como rollback, o ID da transação or
 
 Estados imutáveis também são definidos pois não há nenhuma operação que pode ser realizada na transação após ela ser definida como processada, rejeitada ou com falha.
 
+## Idempotencia e Hashing
+
+Para a criação da chave de idempotencia, são retirados apenas os valores presentes nas regras de negócio daquele objeto para a geração da hash sem utilizar valores temporais.
+Caso a hash ainda não exista no banco, a transação pode ser processada. Caso já exista
+
 
 ## Disclaimer sobre o uso de IA:
 Este arquivo foi redigido apenas por mãos humanas, de forma a retratar as decisões tomadas pelo autor.
