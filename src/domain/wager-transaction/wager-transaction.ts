@@ -280,9 +280,6 @@ export class WagerTransaction {
   }
 
   private assertCanTransition(action: TransitionAction): void {
-    if (this.isTerminal()) {
-      throw new InvalidTransactionStateError(this.id, this._status, action);
-    }
     const allowed = ALLOWED_TRANSITIONS[action];
     if (!allowed.includes(this._status)) {
       throw new InvalidTransactionStateError(this.id, this._status, action);

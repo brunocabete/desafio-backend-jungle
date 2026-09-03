@@ -51,16 +51,16 @@ export class Money {
 
   add(other: Money): Money {
     this.assertSameCurrency(other);
-    return Money.scaled(this.value.plus(other.value), this.currency);
+    return new Money(this.value.plus(other.value), this.currency);
   }
 
   subtract(other: Money): Money {
     this.assertSameCurrency(other);
-    return Money.scaled(this.value.minus(other.value), this.currency);
+    return new Money(this.value.minus(other.value), this.currency);
   }
 
   negate(): Money {
-    return Money.scaled(this.value.negated(), this.currency);
+    return new Money(this.value.negated(), this.currency);
   }
 
   isZero(): boolean {
@@ -98,13 +98,6 @@ export class Money {
     }
   }
 
-  private static scaled(value: Decimal.Value, currency: string): Money {
-    return new Money(
-      new Decimal(new Decimal(value).toFixed(MONEY_SCALE)),
-      currency,
-    );
-  }
-
   private static parseAmount(amount: unknown): Decimal {
     if (typeof amount !== 'string' || amount.length === 0) {
       throw new InvalidMoneyError(
@@ -116,7 +109,7 @@ export class Money {
         `invalid amount '${amount}': expected a non-negative decimal string with at most ${MONEY_SCALE} decimal places`,
       );
     }
-    return new Decimal(new Decimal(amount).toFixed(MONEY_SCALE));
+    return new Decimal(amount);
   }
 
   private static parseCurrency(currency: unknown): string {

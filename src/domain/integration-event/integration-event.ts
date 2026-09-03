@@ -100,6 +100,24 @@ interface WagerTransactionEventData {
   referenceExternalTransactionId?: string;
 }
 
+function wagerTransactionEventData(
+  transaction: WagerTransaction,
+): WagerTransactionEventData {
+  return {
+    transactionId: transaction.id,
+    providerId: transaction.providerId,
+    externalTransactionId: transaction.externalTransactionId,
+    playerId: transaction.playerId,
+    walletId: transaction.walletId,
+    roundId: transaction.roundId,
+    gameId: transaction.gameId,
+    kind: transaction.kind,
+    money: transaction.money.toJSON(),
+    referenceExternalTransactionId:
+      transaction.referenceExternalTransactionId,
+  };
+}
+
 export interface WagerTransactionProcessedData extends WagerTransactionEventData {
   status: WagerTransactionStatus;
   balanceAfter?: MoneyProps;
@@ -135,17 +153,7 @@ export class WagerTransactionProcessed extends IntegrationEvent<WagerTransaction
       ...envelope,
       aggregateId: transaction.id,
       data: {
-        transactionId: transaction.id,
-        providerId: transaction.providerId,
-        externalTransactionId: transaction.externalTransactionId,
-        playerId: transaction.playerId,
-        walletId: transaction.walletId,
-        roundId: transaction.roundId,
-        gameId: transaction.gameId,
-        kind: transaction.kind,
-        money: transaction.money.toJSON(),
-        referenceExternalTransactionId:
-          transaction.referenceExternalTransactionId,
+        ...wagerTransactionEventData(transaction),
         status: transaction.status,
         balanceAfter,
         processedAt: (
@@ -180,17 +188,7 @@ export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionR
       ...envelope,
       aggregateId: transaction.id,
       data: {
-        transactionId: transaction.id,
-        providerId: transaction.providerId,
-        externalTransactionId: transaction.externalTransactionId,
-        playerId: transaction.playerId,
-        walletId: transaction.walletId,
-        roundId: transaction.roundId,
-        gameId: transaction.gameId,
-        kind: transaction.kind,
-        money: transaction.money.toJSON(),
-        referenceExternalTransactionId:
-          transaction.referenceExternalTransactionId,
+        ...wagerTransactionEventData(transaction),
         status: transaction.status,
         failureCode: transaction.failureCode,
       },
@@ -222,17 +220,7 @@ export class WagerTransactionPendingReference extends IntegrationEvent<WagerTran
       ...envelope,
       aggregateId: transaction.id,
       data: {
-        transactionId: transaction.id,
-        providerId: transaction.providerId,
-        externalTransactionId: transaction.externalTransactionId,
-        playerId: transaction.playerId,
-        walletId: transaction.walletId,
-        roundId: transaction.roundId,
-        gameId: transaction.gameId,
-        kind: transaction.kind,
-        money: transaction.money.toJSON(),
-        referenceExternalTransactionId:
-          transaction.referenceExternalTransactionId,
+        ...wagerTransactionEventData(transaction),
         status: transaction.status,
       },
     });

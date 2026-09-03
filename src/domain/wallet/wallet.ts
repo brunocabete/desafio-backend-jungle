@@ -33,8 +33,7 @@ export interface WalletBalanceChangeProps {
 export class InsufficientFundsError extends Error {
   constructor(walletId: string, requested: Money, balance: Money) {
     super(
-      `wallet '${walletId}' has balance ${balance.toJSON().amount} ${balance.currency} ` +
-        `but ${requested.toJSON().amount} ${requested.currency} was requested`,
+      `wallet '${walletId}' has balance ${balance} but ${requested} was requested`,
     );
     this.name = 'InsufficientFundsError';
   }
