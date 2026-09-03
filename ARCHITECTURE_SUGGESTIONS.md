@@ -248,3 +248,29 @@ Sincronia entre mapa, tipo e descrições é garantida por teste (`failure-code.
 | 3. Skeletons de domínio (`create`/`rehydrate`, transições explícitas) | ✔ wallet, wager-transaction, ledger, inbox, outbox, integration-event, failure-code |
 | 4. Unit tests exaustivos (Money, Wallet, BET/WIN/LOSS/REFUND/ROLLBACK, moeda, idempotência divergente, transições) | ✔ 135 testes |
 | 5. Este arquivo (`ARCHITECTURE_SUGGESTIONS.md`) | ✔ (criado; manter atualizado) |
+
+---
+
+## 14. Fase 2 — decisões até o item 2 (schema/ORM)
+
+- **Config compartilhado** em `src/mikro-orm.config.ts` (`defineConfig` + `mikro-orm.configPaths`),
+  driver `@mikro-orm/postgresql` ligado a `DATABASE_HOST/PORT` + `POSTGRES_DB/USER/PASSWORD`.
+  Dependências de tooling: `@mikro-orm/cli` (CLI) e `tsx` (loader de TS da CLI). `@mikro-orm/nestjs`
+  instalado, mas **sem `MikroOrmModule.forRoot` ainda** — entra na Fase 3 com o 1º consumidor.
+- **MikroORM v7 removeu decorators** (`@Entity`/`@Property`). Entidades são definidas com a API
+  nativa **`defineEntity` + builder `p`** (exportados pelo driver), sem classe separada — schema
+  1:1 com a tabela, adotado como padrão.
+- **Money no schema = colunas exatas**: `amount numeric(20,2)` (mapeada como `string` via
+  `p.string().columnType('numeric(20,2)')`, pois o driver do pg devolve numeric como string) +
+  `currency varchar(3)`. Sem custom Type de 2 colunas. `wallet.balance_amount` + `currency`
+  reconstroem o `Money`; ledger guarda `currency` única por entry (todas as 3 quantias compartilham
+  a moeda da wallet — invariante de domínio).
+- **`wallet.version` como coluna `int` comum** (sem `@Version`/`.version()` do ORM): o domínio já
+  incrementa; evita dupla contagem. Concorrência será tratada na Fase 5.
+- **`inbox_message` usa PK composta** `(consumer_name, message_id)` (dedup persistente §10) em vez
+  de `id` sintético + unique redundante.
+- Uniques atuais (entidades): `wallet(player_id,currency)`,
+  `wager_transaction(provider_id,external_transaction_id)` e `(provider_id,idempotency_key)`,
+  `wallet_ledger_entry(transaction_id)` (≤1 entry por transação).
+- **Próximo (item 3):** FKs, `CHECK`s (saldo ≥ 0; ledger `balance_after = balance_before ± money`)
+  e trigger de imutabilidade do ledger — na migration, não via builder.
