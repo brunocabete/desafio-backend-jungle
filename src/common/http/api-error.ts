@@ -1,7 +1,11 @@
 import { HttpException } from '@nestjs/common';
 
 export type ApiErrorCode =
-  'INVALID_PAYLOAD' | 'WALLET_ALREADY_EXISTS' | 'INTERNAL_ERROR';
+  | 'INVALID_PAYLOAD'
+  | 'WALLET_ALREADY_EXISTS'
+  | 'IDEMPOTENCY_CONFLICT'
+  | 'WALLET_NOT_FOUND'
+  | 'INTERNAL_ERROR';
 
 interface ApiErrorBody {
   statusCode: number;

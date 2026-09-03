@@ -35,9 +35,12 @@ export function applyWagerTransaction(
 ): WagerApplyResult {
   const { wallet, transaction, now = new Date() } = props;
 
-  if (transaction.status !== WagerTransactionStatus.Pending) {
+  if (
+    transaction.status !== WagerTransactionStatus.Pending &&
+    transaction.status !== WagerTransactionStatus.PendingReference
+  ) {
     throw new Error(
-      `transaction '${transaction.id}' must be PENDING to be applied, found ${transaction.status}`,
+      `transaction '${transaction.id}' must be PENDING or PENDING_REFERENCE to be applied, found ${transaction.status}`,
     );
   }
   if (wallet.id !== transaction.walletId) {
@@ -82,7 +85,9 @@ function applyReversal(
     reference.status === WagerTransactionStatus.Pending ||
     reference.status === WagerTransactionStatus.PendingReference
   ) {
-    transaction.markPendingReference();
+    if (transaction.status === WagerTransactionStatus.Pending) {
+      transaction.markPendingReference();
+    }
     return { kind: 'pendingReference' };
   }
   if (reference.status !== WagerTransactionStatus.Processed) {

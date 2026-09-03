@@ -106,12 +106,14 @@ function expectRejected(
 }
 
 describe('WagerTransactionApplier guards', () => {
-  it('refuses to apply a transaction that is not PENDING', () => {
+  it('refuses to apply a transaction in a terminal state', () => {
     const w = wallet('100.00');
     const tx = buildTx(WagerTransactionKind.Bet);
     tx.markProcessed(undefined, NOW);
 
-    expect(() => apply(w, tx)).toThrow(/must be PENDING to be applied/);
+    expect(() => apply(w, tx)).toThrow(
+      /must be PENDING or PENDING_REFERENCE to be applied/,
+    );
   });
 
   it('refuses to apply a transaction against a foreign wallet', () => {
@@ -520,6 +522,50 @@ describe('WagerTransactionApplier ROLLBACK rules', () => {
 
     expect(result.kind).toBe('pendingReference');
     expect(tx.status).toBe(WagerTransactionStatus.PendingReference);
+  });
+});
+
+describe('WagerTransactionApplier reprocessing of PENDING_REFERENCE', () => {
+  it('applies a PENDING_REFERENCE reversal once its reference arrives', () => {
+    const w = wallet('100.00');
+    const tx = buildTx(WagerTransactionKind.Refund, {
+      referenceExternalTransactionId: 'ext-bet-1',
+      amount: '25.00',
+    });
+
+    expect(apply(w, tx).kind).toBe('pendingReference');
+    expect(tx.status).toBe(WagerTransactionStatus.PendingReference);
+
+    const bet = processed(WagerTransactionKind.Bet, {
+      externalTransactionId: 'ext-bet-1',
+      amount: '25.00',
+    });
+    const result = apply(w, tx, { reference: bet });
+
+    expect(result.kind).toBe('processed');
+    if (result.kind === 'processed') {
+      expect(result.entry?.direction).toBe(LedgerDirection.Credit);
+    }
+    expect(tx.status).toBe(WagerTransactionStatus.Processed);
+    expect(tx.referenceTransactionId).toBe(bet.id);
+    expect(w.balance.toJSON().amount).toBe('125.00');
+  });
+
+  it('keeps a PENDING_REFERENCE reversal pending while its reference is still missing', () => {
+    const w = wallet('100.00');
+    const tx = buildTx(WagerTransactionKind.Refund, {
+      referenceExternalTransactionId: 'ext-bet-1',
+      amount: '25.00',
+    });
+
+    expect(apply(w, tx).kind).toBe('pendingReference');
+    expect(tx.status).toBe(WagerTransactionStatus.PendingReference);
+
+    const result = apply(w, tx);
+
+    expect(result.kind).toBe('pendingReference');
+    expect(tx.status).toBe(WagerTransactionStatus.PendingReference);
+    expect(w.balance.toJSON().amount).toBe('100.00');
   });
 });
 
