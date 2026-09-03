@@ -32,30 +32,52 @@ describe('parseCreateWallet', () => {
     });
   });
 
-  it.each([
-    [{ playerId: '' }, 'missing playerId'],
-    [{ playerId: 'x'.repeat(65) }, 'playerId too long'],
-    [
-      { playerId: 'p', initialBalance: { amount: '-5.00', currency: 'BRL' } },
-      'negative amount',
-    ],
-    [
-      { playerId: 'p', initialBalance: { amount: '1.234', currency: 'BRL' } },
-      'more than 2 decimal places',
-    ],
-    [
-      { playerId: 'p', initialBalance: { amount: '1.00', currency: 'brl' } },
-      'lowercase currency',
-    ],
-    [
-      { playerId: 'p', initialBalance: { amount: 100, currency: 'BRL' } },
-      'non-string amount',
-    ],
-    [
-      { playerId: 'p', initialBalance: { amount: '10.00', currency: '' } },
-      'empty currency',
-    ],
-  ])('rejects %s', (input, _label) => {
-    expect(() => parseCreateWallet(input)).toThrow(InvalidCreateWalletError);
-  });
+  const invalidCases = [
+    { name: 'rejects a missing playerId', input: { playerId: '' } },
+    {
+      name: 'rejects a playerId longer than 64 characters',
+      input: { playerId: 'x'.repeat(65) },
+    },
+    {
+      name: 'rejects a negative initialBalance',
+      input: {
+        playerId: 'p',
+        initialBalance: { amount: '-5.00', currency: 'BRL' },
+      },
+    },
+    {
+      name: 'rejects an initialBalance with more than 2 decimal places',
+      input: {
+        playerId: 'p',
+        initialBalance: { amount: '1.234', currency: 'BRL' },
+      },
+    },
+    {
+      name: 'rejects a lowercase currency',
+      input: {
+        playerId: 'p',
+        initialBalance: { amount: '1.00', currency: 'brl' },
+      },
+    },
+    {
+      name: 'rejects a non-string amount',
+      input: {
+        playerId: 'p',
+        initialBalance: { amount: 100, currency: 'BRL' },
+      },
+    },
+    {
+      name: 'rejects an empty currency',
+      input: {
+        playerId: 'p',
+        initialBalance: { amount: '10.00', currency: '' },
+      },
+    },
+  ] as const;
+
+  for (const { name, input } of invalidCases) {
+    it(name, () => {
+      expect(() => parseCreateWallet(input)).toThrow(InvalidCreateWalletError);
+    });
+  }
 });

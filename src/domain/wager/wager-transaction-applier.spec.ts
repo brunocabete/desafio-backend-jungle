@@ -304,26 +304,21 @@ describe('WagerTransactionApplier REFUND rules', () => {
     );
   });
 
-  it.each(['providerId', 'playerId', 'walletId', 'roundId'] as const)(
-    'rejects a REFUND whose reference has a different %s',
-    (field) => {
-      const other =
-        field === 'providerId'
-          ? 'provider-b'
-          : field === 'playerId'
-            ? 'player-2'
-            : field === 'walletId'
-              ? 'wallet-2'
-              : 'round-2';
-      const w = wallet(
-        '100.00',
-        field === 'walletId' ? 'wallet-2' : 'wallet-1',
-      );
+  const mismatchedScope = [
+    { field: 'providerId', override: 'provider-b', walletId: 'wallet-1' },
+    { field: 'playerId', override: 'player-2', walletId: 'wallet-1' },
+    { field: 'walletId', override: 'wallet-2', walletId: 'wallet-2' },
+    { field: 'roundId', override: 'round-2', walletId: 'wallet-1' },
+  ] as const;
+
+  for (const { field, override, walletId } of mismatchedScope) {
+    it(`rejects a REFUND whose reference has a different ${field}`, () => {
+      const w = wallet('100.00', walletId);
       const ref = processed(WagerTransactionKind.Bet, { amount: '25.00' });
       const tx = buildTx(WagerTransactionKind.Refund, {
         referenceExternalTransactionId: ref.externalTransactionId,
-        walletId: field === 'walletId' ? 'wallet-2' : 'wallet-1',
-        [field]: other,
+        walletId,
+        [field]: override,
       });
 
       const result = apply(w, tx, { reference: ref });
@@ -335,8 +330,8 @@ describe('WagerTransactionApplier REFUND rules', () => {
         FailureCode.REFERENCE_SCOPE_MISMATCH,
         '100.00',
       );
-    },
-  );
+    });
+  }
 
   it('rejects a REFUND whose reference is in a different currency', () => {
     const w = wallet('100.00');
