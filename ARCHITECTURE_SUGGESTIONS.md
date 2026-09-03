@@ -1,0 +1,250 @@
+# ARCHITECTURE_SUGGESTIONS.md — log de decisões (Fase 1)
+
+> **Propósito (PLANNING.md, Fase 1, item 5):** registro contínuo das decisões técnicas
+> tomadas durante o desenvolvimento. Este arquivo é um **rascunho de decisões/sugestões**
+> e alimentará o `ARCHITECTURE.md` definitivo, que será consolidado manualmente pelo autor
+> ao final do projeto (Fase 8). Deve ser mantido atualizado a cada fase.
+>
+> Requisitos normativos: `SPECS.MD` (autoritativo). Ordem de trabalho: `PLANNING.md`.
+
+---
+
+## 1. Escopo desta fase
+
+Fase 1 = **Money + modelo de domínio puro** (TypeScript puro, sem infraestrutura:
+sem ORM, sem HTTP, sem filas). Tudo aqui é testado por unit tests (`bun run test`).
+
+Estado: **concluído e verificado** — 135 testes verdes, `oxlint` e `tsc --noEmit` limpos.
+
+---
+
+## 2. Money (SPECS §6.1)
+
+- **Dependência:** `decimal.js` (nunca `number`/`float` para dinheiro — §5.1).
+- **Value Object imutável** com construtor privado; toda operação retorna nova instância.
+- **Fronteira como string decimal** com escala fixa de 2 casas (`MONEY_SCALE = 2`):
+  - entrada validada por regex `^\d+(?:\.\d{1,2})?$` → rejeita `NaN`, `Infinity`,
+    notação científica, string vazia, negativos no contrato de entrada e precisão > 2
+    (sem arredondamento silencioso na entrada);
+  - saída (`toJSON`/`toString`) sempre normalizada com `toFixed(2)`.
+- **Multi-moeda:** modelo aceita qualquer código ISO-4217 (`^[A-Z]{3}$`); operações
+  entre moedas diferentes lançam `CurrencyMismatchError`. Padrão do projeto: `BRL`
+  (`DEFAULT_CURRENCY`), aplicado nas fronteiras de API/fila nas fases seguintes.
+- **Aritmética interna sem re-escala:** como os operandos já têm ≤ 2 casas exatas,
+  `add`/`subtract`/`negate` não precisam arredondar (somente a serialização fixa a escala).
+- Comparações: `equals` compara valor numérico + moeda (não lança erro entre moedas);
+  `isLessThan` exige mesma moeda.
+- **Pureza:** `Money` não depende de ORM, de tipos monetários de banco nem de decorators
+  do NestJS. O `Decimal` só é configurado globalmente no boot da aplicação (ver §3).
+
+### Decisões pendentes / abertas
+- Definir se `DEFAULT_CURRENCY` vira default real nos DTOs de entrada (Fase 3) ou se a
+  moeda é sempre obrigatória no payload.
+
+---
+
+## 3. Configuração explícita do `decimal.js`
+
+- `common/decimal/decimal.config.ts` expõe `DECIMAL_PRECISION = 20` e
+  `DECIMAL_ROUNDING = ROUND_HALF_UP` como **decisão consciente** (não confiar no default
+  implícito da biblioteca). `Decimal.set({ ..., defaults: true })` aplica no boot.
+- `DecimalConfigModule` (Nest `OnModuleInit`) garante a aplicação ao iniciar a aplicação.
+- Justificativa: em sistemas financeiros, o modo de arredondamento e a precisão são
+  decisões de produto; mantê-las explícitas e testadas (`decimal.config.spec.ts`).
+
+---
+
+## 4. Wallet (SPECS §6.2)
+
+- **Aggregate Root** com construtor privado; `open` (criação) e `rehydrate`
+  (reconstrução do banco — **não revalida** transições).
+- Invariantes encapsuladas:
+  - `version` inicia em **1** e incrementa **somente quando o saldo muda** (1 por
+    movimentação);
+  - saldo nunca negativo (`debit` lança `InsufficientFundsError`);
+  - toda alteração de saldo produz exatamente **1** `WalletLedgerEntry` balanceada
+    (`debit`→DEBIT, `credit`→CREDIT) e atualiza `updatedAt`;
+  - moeda da operação deve ser a da wallet (`assertSameCurrency`).
+- Unicidade por `(playerId, currency)` é responsabilidade do **schema** (Fase 2), não da
+  classe.
+
+### Decisão: locking otimista
+Sugestão já registrada em `ARCHITECTURE.md`: wallet de jogador = contenção rara; usar
+`version` para **otimistic locking** com retry limitado (a confirmar/refinar na Fase 5,
+§8). Não há lock global compartilhado (§5.6).
+
+---
+
+## 5. WagerTransaction (SPECS §6.3)
+
+- Máquina de estados com construtor privado + `create` (valida) e `rehydrate` (não valida).
+- Nasce em `PENDING`. Estados: `PENDING`, `PENDING_REFERENCE`, `PROCESSED`, `REJECTED`,
+  `FAILED` — os três últimos são **terminais**.
+- Transições permitidas (tabela única `ALLOWED_TRANSITIONS`; tentar transição inválida
+  lança `InvalidTransactionStateError`):
+
+| Ação | De | Para |
+|---|---|---|
+| processar | PENDING, PENDING_REFERENCE | PROCESSED |
+| aguardar referência | PENDING | PENDING_REFERENCE |
+| rejeitar | PENDING, PENDING_REFERENCE | REJECTED |
+| falhar | PENDING, PENDING_REFERENCE | FAILED |
+
+- Validações no `create`:
+  - `REFUND`/`ROLLBACK` exigem `referenceExternalTransactionId`
+    (`MissingReferenceError`);
+  - `OPENING` é interno e **não** pode carregar referência;
+  - `idempotencyKey` e `payloadHash` não podem ser vazios.
+- Consultas de domínio: `affectsBalance()` (false p/ `LOSS`), `requiresReference()`
+  (true p/ `REFUND`/`ROLLBACK`), `matchesPayload()`, `ledgerDirectionFor(reference?)`.
+
+---
+
+## 6. Aplicação das regras de negócio — `wager-transaction-applier.ts` (SPECS §7)
+
+Função pura `applyWagerTransaction(wallet, transaction, { reference, referenceAlreadyReversed, now })`
+que **encapsula a tabela §7** e retorna um resultado discriminado
+(`processed` com entry opcional | `rejected` com `failureCode` | `pendingReference`),
+em vez de lançar exceção para caminhos de negócio. Os *guards* de programação
+(estado ≠ PENDING, wallet errada) continuam lançando erro.
+
+Regras implementadas (todas com `FailureCode` específico):
+
+| Operação | Direção | Regras |
+|---|---|---|
+| BET | DEBIT | saldo insuficiente → `INSUFFICIENT_FUNDS` |
+| WIN | CREDIT | movimento direto |
+| LOSS | — | `PROCESSED` sem mover saldo e sem entry de ledger |
+| REFUND | CREDIT | só referencia BET (`REFUND_OF_NON_BET`); uma única vez (`REFERENCE_ALREADY_REVERSED`) |
+| ROLLBACK | inverso da referência | referencia BET/WIN/REFUND (`UNSUPPORTED_REVERSAL_REFERENCE`) |
+
+Regras transversais em reversões:
+- referência ausente/`PENDING`/`PENDING_REFERENCE` → `markPendingReference()` +
+  resultado `pendingReference` (reprocessar depois — worker Fase 4/5);
+- referência terminal não-PROCESSED → `REFERENCE_NOT_PROCESSED`;
+- escopo (provider/player/wallet/round/moeda) diferente → `REFERENCE_SCOPE_MISMATCH`;
+- valor ≠ valor da referência → `REFERENCE_AMOUNT_MISMATCH` (§7.5);
+- reversão que deixaria saldo negativo → `REVERSAL_WOULD_OVERDRAW`, código **distinto** de
+  `INSUFFICIENT_FUNDS` (§7.9).
+
+### Decisões de desenho
+- **Guard de "já revertido" vem de fora:** a classe de domínio não conhece o histórico;
+  quem aplica (repositório/use case, Fase 3/4) consulta reversões existentes e passa
+  `referenceAlreadyReversed`. Na Fase 2 isso será reforçado por índice único no schema
+  (§7.4, §5.9).
+- **`entryId` gerado no applier** (`randomUUID`) para manter a pureza/atomicidade do
+  `WalletLedgerEntry` na mesma transação (Fases 3–4).
+
+---
+
+## 7. WalletLedgerEntry (SPECS §6.4)
+
+- **Imutabilidade estrutural:** sem setters, sem métodos de transição; `create`/`rehydrate`
+  + campos `readonly`.
+- `create` valida a **aritmética** (`balanceBefore ± money === balanceAfter`) via
+  `isBalanced()` e a **coerência de moeda** entre os três `Money`.
+- `rehydrate` reconstrói sem revalidar (permite reidratar entradas históricas).
+- Operações sem efeito no saldo (LOSS, REJECTED) **não** geram lançamento.
+- Double-entry é diferencial opcional, fora do escopo atual.
+
+---
+
+## 8. InboxMessage / OutboxMessage (SPECS §6.5)
+
+- **Inbox:** dedup persistente por `(consumerName, messageId)` — responsabilidade do
+  schema na Fase 2; a classe guarda o ciclo `receive → markProcessed` (uma única vez).
+- **Outbox:** `enqueue(event)` captura o envelope como payload; ciclo de publicação com
+  retry/backoff:
+  - `isPending()`, `isDue(now)`, `markPublished(at)`, `scheduleRetry(now)`;
+  - **backoff exponencial:** `200ms * 2^(attempt-1)` com teto de **30s**
+    (`OUTBOX_RETRY_BASE_DELAY_MS`/`OUTBOX_RETRY_MAX_DELAY_MS`). Constantes exportadas
+    para reuso/configuração e testadas.
+- Inbox + mudança financeira + ledger + outbox devem comitar **na mesma transação SQL**
+  (Fases 3–4); nada é publicado antes do commit (§5.4).
+
+---
+
+## 9. IntegrationEvent (SPECS §11)
+
+- **Envelope abstrato** `IntegrationEvent<T>`: `eventId`, `aggregateId`, `correlationId`,
+  `causationId?`, `occurredAt`, `data`, com `eventType`/`version` **no tipo** da subclasse
+  e `toJSON()` para o payload da outbox (ISO-8601 em `occurredAt`).
+- `EventContext` propaga correlação/causação; `eventId` e `occurredAt` têm defaults
+  (`randomUUID`, `new Date()`).
+- Subclasses concretas (Fase 1):
+  - `WagerTransactionProcessed` (qualquer transação aplicada, incl. LOSS);
+  - `WagerTransactionRejected` (com `failureCode`);
+  - `WagerTransactionPendingReference`;
+  - `WalletBalanceChanged` (somente quando o saldo muda).
+- `data` sempre serializa **`MoneyProps`** (string decimal), nunca a instância `Money`
+  (§11) — payload JSON estável e versionável.
+- Repetição entre os três eventos de transação foi consolidada no helper
+  `wagerTransactionEventData()`.
+
+---
+
+## 10. Taxonomia de FailureCode (SPECS §7.2)
+
+Catálogo central (`domain/failure-code.ts`): mapa `as const` + tipo derivado +
+`FAILURE_CODE_DESCRIPTIONS` (documentação máquina-legível) + guard `isFailureCode`
+(usa `Object.hasOwn`, evitando falsos positivos de chaves herdadas).
+
+Categorias (códigos estáveis, `^[A-Z][A-Z_]+$`):
+- **Payload/validação:** `INVALID_PAYLOAD`, `INVALID_AMOUNT`, `CURRENCY_MISMATCH`,
+  `UNSUPPORTED_TRANSACTION_KIND`, `OPENING_NOT_ALLOWED`;
+- **Idempotência:** `IDEMPOTENCY_CONFLICT`;
+- **Wallet:** `WALLET_NOT_FOUND`, `INSUFFICIENT_FUNDS`, `REVERSAL_WOULD_OVERDRAW`;
+- **Referência/ordenação:** `REFERENCE_NOT_FOUND`, `REFERENCE_NOT_PROCESSED`,
+  `UNRESOLVED_REFERENCE`, `REFERENCE_SCOPE_MISMATCH`, `REFERENCE_ALREADY_REVERSED`,
+  `REFUND_OF_NON_BET`, `UNSUPPORTED_REVERSAL_REFERENCE`, `REFERENCE_AMOUNT_MISMATCH`;
+- **Infra/permanente:** `STORAGE_FAILURE`.
+
+Sincronia entre mapa, tipo e descrições é garantida por teste (`failure-code.spec.ts`).
+
+---
+
+## 11. Idempotência e payload hash (SPECS §9)
+
+- **Chave:** header `Idempotency-Key` (default sugerido `"{providerId}:{externalTransactionId}"`),
+  obrigatório na entrada (Fase 3). Header e metadados de transporte **não** entram no hash.
+- **Algoritmo do `payloadHash`:** serialização **JSON canônica** (RFC 8785, chaves
+  ordenadas) do subconjunto de campos de negócio via pacote `canonical-json`, seguida de
+  **SHA-256** em hex (`canonical-json/hash` → `createHash('sha256')`).
+- **Subconjunto de campos** (whitelist explícita em `wagerPayloadHash`):
+  `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`,
+  `kind`, `money.amount`, `money.currency` e `referenceExternalTransactionId` (quando
+  presente). Campos extras do payload (ex.: metadados) são descartados na construção do
+  objeto hasheado.
+- **Classificação** (`classifyIdempotency`): chave nova → `PROCESS`; chave existente com
+  mesmo hash → `REPLAY` (devolve resultado original); chave existente com hash diferente
+  → `CONFLICT` (e **não** replay).
+
+---
+
+## 12. Pendências para as próximas fases (fora do escopo da Fase 1)
+
+- **Fase 2:** entidades MikroORM + migrations; constraints/índices **no schema**
+  (unicidade `(provider_id, external_transaction_id)` e de idempotency, unicidade de
+  wallet `(player_id, currency)`, CHECK de saldo não-negativo, ledger imutável sem
+  UPDATE/DELETE, marcador único de inbox).
+- **Fase 3:** endpoints HTTP reutilizando o mesmo use case do consumidor SQS; criação de
+  wallet com `OPENING` + CREDIT na mesma transação; mapeamento de status HTTP;
+  worker/reprocessamento de `PENDING_REFERENCE` com **TTL/limite de tentativas** a definir
+  (§7.1).
+- **Fase 4/5:** transactional outbox + inbox + consumer SQS; **definição final do
+  locking** (otimista com retry vs. `FOR UPDATE` por wallet — §8) e garantia do cenário
+  obrigatório (duas apostas concorrentes).
+- **Autenticação (§2):** decisão de não implementar/IdP externo, com ponto de extensão
+  explícito — documentar no `ARCHITECTURE.md`.
+
+---
+
+## 13. Checklist da Fase 1 (PLANNING.md)
+
+| Item | Status |
+|---|---|
+| 1. Dependência `decimal.js` | ✔ `package.json` |
+| 2. `Money` (§6.1) com validações e multi-moeda (default BRL) | ✔ `domain/money/money.ts` |
+| 3. Skeletons de domínio (`create`/`rehydrate`, transições explícitas) | ✔ wallet, wager-transaction, ledger, inbox, outbox, integration-event, failure-code |
+| 4. Unit tests exaustivos (Money, Wallet, BET/WIN/LOSS/REFUND/ROLLBACK, moeda, idempotência divergente, transições) | ✔ 135 testes |
+| 5. Este arquivo (`ARCHITECTURE_SUGGESTIONS.md`) | ✔ (criado; manter atualizado) |
