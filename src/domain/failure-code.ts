@@ -55,5 +55,7 @@ export const FAILURE_CODE_DESCRIPTIONS: Record<FailureCode, string> = {
 };
 
 export function isFailureCode(value: unknown): value is FailureCode {
-  return typeof value === 'string' && value in FailureCode;
+  return (
+    typeof value === 'string' && Object.hasOwn(FailureCode, value)
+  );
 }

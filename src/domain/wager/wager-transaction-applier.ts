@@ -67,12 +67,7 @@ export function applyWagerTransaction(
     return { kind: 'processed' };
   }
 
-  return applyMovement(
-    wallet,
-    transaction,
-    transaction.ledgerDirectionFor(),
-    now,
-  );
+  return applyMovement(wallet, transaction, now);
 }
 
 function applyReversal(
@@ -114,22 +109,17 @@ function applyReversal(
   if (!transaction.money.equals(reference.money)) {
     return reject(transaction, FailureCode.REFERENCE_AMOUNT_MISMATCH);
   }
-  return applyMovement(
-    wallet,
-    transaction,
-    transaction.ledgerDirectionFor(reference),
-    now,
-    reference.id,
-  );
+  return applyMovement(wallet, transaction, now, reference);
 }
 
 function applyMovement(
   wallet: Wallet,
   transaction: WagerTransaction,
-  direction: LedgerDirection,
   now: Date,
-  referenceTransactionId?: string,
+  reference?: WagerTransaction,
 ): WagerApplyResult {
+  const direction = transaction.ledgerDirectionFor(reference);
+  const referenceTransactionId = reference?.id;
   if (
     direction === LedgerDirection.Debit &&
     wallet.balance.isLessThan(transaction.money)

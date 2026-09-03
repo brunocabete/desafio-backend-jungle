@@ -17,7 +17,8 @@ export interface WagerTransactionRequest {
 }
 
 export function wagerPayloadHash(request: WagerTransactionRequest): string {
-  const business: Record<string, unknown> = {
+  const { referenceExternalTransactionId } = request;
+  return hash({
     providerId: request.providerId,
     externalTransactionId: request.externalTransactionId,
     playerId: request.playerId,
@@ -26,12 +27,10 @@ export function wagerPayloadHash(request: WagerTransactionRequest): string {
     gameId: request.gameId,
     kind: request.kind,
     money: { amount: request.money.amount, currency: request.money.currency },
-  };
-  if (request.referenceExternalTransactionId !== undefined) {
-    business.referenceExternalTransactionId =
-      request.referenceExternalTransactionId;
-  }
-  return hash(business);
+    ...(referenceExternalTransactionId !== undefined
+      ? { referenceExternalTransactionId }
+      : {}),
+  });
 }
 
 export function classifyIdempotency(
