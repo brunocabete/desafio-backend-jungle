@@ -17,7 +17,11 @@ export const WalletLedgerEntryEntity = defineEntity({
   properties: {
     id: p.uuid().primary(),
     walletId: () =>
-      p.manyToOne(WalletEntity).mapToPk().fieldName('wallet_id').deleteRule('no action'),
+      p
+        .manyToOne(WalletEntity)
+        .mapToPk()
+        .fieldName('wallet_id')
+        .deleteRule('no action'),
     transactionId: () =>
       p
         .manyToOne(WagerTransactionEntity)

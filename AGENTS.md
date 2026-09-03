@@ -2,17 +2,17 @@
 
 ## Project status — read this first
 
-This is the **Jungle Gaming "distributed wagering processor" challenge**. The real spec is `SPECS.MD` (pt-BR, authoritative). The current `src/` is still the **stock NestJS scaffold** (`AppController`/`AppService` + `/` returning "Hello World!") — almost nothing from the spec is implemented yet. Don't assume endpoints, domain classes, MikroORM config, migrations, `ARCHITECTURE.md`, or the outbox/inbox exist; check before relying on them.
+This is the **Jungle Gaming "distributed wagering processor" challenge**. The real spec is `SPECS.MD` (pt-BR, authoritative). Status evolves fast — trust the **Progress table in `PLANNING.md`** and the running decision log in `ARCHITECTURE_SUGGESTIONS.md`, and check before assuming anything exists. Currently implemented: pure-TS domain (Phase 1), DB schema + reversible migrations + integration test (Phase 2), MikroORM Nest wiring and `POST /wallets` (Phase 3, in progress). `ARCHITECTURE.md` and the outbox/inbox consumer do **not** exist yet.
 
 `README.md` is untouched NestJS boilerplate and does **not** describe the actual project or its real setup/commands. Trust `package.json` + `SPECS.MD`, not the README.
 
 ## Commands (Bun, never npm)
 
 - Install: `bun install`
-- Dev server (watch): `bun run start:dev`  (prod build: `bun run build`, then `node dist/main`)
-- Unit tests: `bun run test` → `vitest run`, matches `**/*.spec.ts`
-- E2E tests: `bun run test:e2e` → vitest with `vitest.config.e2e.ts`, matches `**/*.e2e-spec.ts` (test files live in `test/`)
-- Single file: `bunx vitest run src/path/file.spec.ts`; for e2e add `--config vitest.config.e2e.ts`
+- Dev server (watch): `bun run start:dev`  (prod: `bun run build`, then `bun dist/main` — **runtime é o Bun**; SPEC §4 manda "Runtime / package manager / test runner: Bun 1.x")
+- Unit tests: `bun run test` → **`bun test ./src`** (test runner nativo do Bun, SPEC §4), matches `**/*.spec.ts`
+- E2E tests: `bun run test:e2e` → **`bun test ./test`**, matches `**/*.e2e.test.ts` (test files live in `test/`)
+- Single file: `bun test ./src/path/file.spec.ts`; for e2e `bun test ./test/file.e2e.test.ts`
 - Lint: `bun run lint` = `oxlint src/ test/` (not eslint)
 - Format: `bun run format` = prettier (single quotes, trailing commas)
 - Migrations: `bun run migration:create|up|down` → `mikro-orm ...` using `src/mikro-orm.config.ts` (TS via `tsx`; requires Postgres de pé — ver infra abaixo).
@@ -20,8 +20,9 @@ This is the **Jungle Gaming "distributed wagering processor" challenge**. The re
 ## Toolchain quirks
 
 - Pure ESM (`"type": "module"`, `module: nodenext`): **relative imports must use the `.js` extension** (e.g. `import { AppModule } from './app.module.js'`) even though files are `.ts`. Existing scaffold code already follows this.
-- Vitest globals enabled (`types: ["vitest/globals", "node"]`): `describe`/`it`/`expect` are global; tests don't import them.
-- Test runner is Vitest **only** (no Jest config exists — don't add jest).
+- **Runtime é Bun em todo lugar** (dev, prod `bun dist/main` e testes `bun test`). APIs exclusivas do Bun (`Bun.randomUUIDv7()`) são usadas diretamente no código — tipos via `@types/bun` (tsconfig `types: ["bun", "node"]`).
+- **Test runner é o `bun test`** (SPEC §4 manda "test runner: Bun"). Globals `describe`/`it`/`expect`/`before*`/`after*` existem sem import (tipados por `src/bun-test-globals.d.ts`). Se um arquivo **importar** algo de `bun:test` (ex.: `spyOn`), os globals desse arquivo deixam de existir — importe também o que usar. Nada de vitest/jest.
+- `*.tsbuildinfo` (incl. `tsconfig.build.tsbuildinfo`) is a **generated incremental-build cache** and is **gitignored** — it is recreated by `nest build`/`tsc`; never commit it and don't rely on it.
 - `*.tsbuildinfo` (incl. `tsconfig.build.tsbuildinfo`) is a **generated incremental-build cache** and is **gitignored** — it is recreated by `nest build`/`tsc`; never commit it and don't rely on it.
 
 ## Local infra (Docker Compose)
@@ -34,7 +35,7 @@ This is the **Jungle Gaming "distributed wagering processor" challenge**. The re
 
 ## Architecture constraints (from SPECS.MD — inviolable, §5)
 
-- **Never use `number`/`float`/`double` for money.** `Money` is immutable, decimal-string at the boundary, 2-decimal scale.
+- **Never use `number`/`float`/`double` for money** (spec §5 item 1). `Money` is immutable, decimal-string at the boundary, 2-decimal scale (§6.1).
 - Invariants (uniqueness of idempotency key, wallet per playerId+currency, ledger immutability, non-negative balance, exact-once apply) must be enforced **in the DB schema** (constraints/indexes), not only in app code.
 - Inbox + wallet change + ledger + outbox must commit in **one SQL transaction**; never publish events before commit.
 - Concurrency unit is the **wallet**; must stay correct with 3+ app instances and out-of-order / duplicated messages. No in-memory idempotency, no shared global wallet lock, no naive read→calculate→update balance.

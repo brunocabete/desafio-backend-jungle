@@ -113,8 +113,7 @@ function wagerTransactionEventData(
     gameId: transaction.gameId,
     kind: transaction.kind,
     money: transaction.money.toJSON(),
-    referenceExternalTransactionId:
-      transaction.referenceExternalTransactionId,
+    referenceExternalTransactionId: transaction.referenceExternalTransactionId,
   };
 }
 

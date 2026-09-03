@@ -44,7 +44,9 @@ describe('OutboxMessage.enqueue', () => {
     expect(message.aggregateId).toBe('wallet-1');
     expect(message.eventType).toBe('FakeEvent');
     expect(message.occurredAt).toBe(NOW);
-    expect(message.payload).toEqual(event.toJSON());
+    expect(message.payload).toEqual(
+      event.toJSON() as unknown as Record<string, unknown>,
+    );
     expect(message.attempts).toBe(0);
     expect(message.isPending()).toBe(true);
     expect(message.publishedAt).toBeUndefined();

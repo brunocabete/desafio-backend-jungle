@@ -21,7 +21,11 @@ export const WagerTransactionEntity = defineEntity({
     idempotencyKey: p.string().columnType('varchar(255)'),
     payloadHash: p.string().columnType('varchar(64)'),
     walletId: () =>
-      p.manyToOne(WalletEntity).mapToPk().fieldName('wallet_id').deleteRule('no action'),
+      p
+        .manyToOne(WalletEntity)
+        .mapToPk()
+        .fieldName('wallet_id')
+        .deleteRule('no action'),
     playerId: p.string().columnType('varchar(64)'),
     roundId: p.string().columnType('varchar(128)'),
     gameId: p.string().columnType('varchar(128)'),
@@ -29,7 +33,10 @@ export const WagerTransactionEntity = defineEntity({
     status: p.string().columnType('varchar(24)'),
     moneyAmount: p.string().columnType('numeric(20,2)'),
     moneyCurrency: p.string().columnType('varchar(3)'),
-    referenceExternalTransactionId: p.string().columnType('varchar(128)').nullable(),
+    referenceExternalTransactionId: p
+      .string()
+      .columnType('varchar(128)')
+      .nullable(),
     referenceTransactionId: () =>
       p
         .manyToOne(WagerTransactionEntity)

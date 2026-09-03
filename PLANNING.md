@@ -9,9 +9,9 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 | Phase | Status |
 |---|---|
 | 0 — Foundation | ✅ done |
-| 1 — Money and domain model | ✅ done (135 unit tests) |
+| 1 — Money and domain model | ✅ done (145 unit tests) |
 | 2 — DB schema, migrations, ORM | ✅ itens 1–3 e 5 done (migration inicial + teste de integração em DB limpo); item 4 adiado (forRoot na Fase 3) |
-| 3 — Application services & HTTP API | 🚧 item 1 done (forRoot + boot exige Postgres) |
+| 3 — Application services & HTTP API | 🚧 itens 1–2 done (forRoot + boot exige Postgres; `POST /wallets`) |
 | 4 — SQS consumer + transactionality | pending |
 | 5 — Concurrency hardening | pending |
 | 6 — Observability | pending |
@@ -32,7 +32,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 
 1. Add `decimal.js` (never `number`/`float` for money — spec §5.1).
 2. Implement `Money` per spec §6.1 (immutable, decimal-string boundary, 2-decimal scale, multi-currency with default `BRL`, invalid-input rejection). Kept lean: no redundant re-scaling in arithmetic — scale is guaranteed at the boundary and serialization.
-3. Implement domain skeletons per §6.3–6.5 with **private constructors + static factories** (`create`/`from`/`rehydrate`; `rehydrate` never re-validates transitions):
+3. Implement domain skeletons per §6.2–6.5 with **private constructors + static factories** (`create`/`from`/`rehydrate`; `rehydrate` never re-validates transitions):
    - `Wallet` (aggregate root; `version` starts at 1, increments only on balance change);
    - `WagerTransaction` + kind/status enums + explicit terminal-state transitions (`ALLOWED_TRANSITIONS`);
    - `WalletLedgerEntry` (structurally immutable; `create` validates `balanceBefore ± money === balanceAfter`);
@@ -44,29 +44,29 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 
 ## Phase 2 — DB schema, migrations, ORM
 
-Goal: make the invariants from spec §6 real in PostgreSQL (§5.9), with **no Nest wiring yet** — the app has no DB consumer until Phase 3. Avoid: custom two-column MikroORM types, extra mapping layers, speculative indexes/triggers, `@Version` double-counting.
+Goal: make the invariants from spec §6 real in PostgreSQL (spec §5 item 9), with **no Nest wiring yet** — the app has no DB consumer until Phase 3. Avoid: custom two-column MikroORM types, extra mapping layers, speculative indexes/triggers, `@Version` double-counting.
 
 1. **✅ MikroORM config + CLI** — `src/mikro-orm.config.ts` (`defineConfig` from `@mikro-orm/postgresql`), driver wired to `DATABASE_HOST/PORT` + `POSTGRES_DB/USER/PASSWORD`; `mikro-orm.configPaths` in `package.json`; deps `@mikro-orm/cli` + `tsx` (TS loader for the CLI). Migrations: TS in `src/migrations` (dev), JS in `dist/migrations` (prod). Verify: `bun run mikro-orm debug` finds the config; connection to local Postgres succeeds.
 2. **✅ Entities** — ORM schemas (`defineEntity`, v7 sem decorators) para `wallet`, `wager_transaction`, `wallet_ledger_entry`, `inbox_message`, `outbox_message`. Money = **exact columns** (`amount numeric(20,2)` mapeado como string + `currency varchar(3)`), read back as string and rehydrated via `Money.from` — no custom ORM type. `wallet.version` is a **plain column** (domain increments it; do NOT add `@Version` on top). `inbox_message` usa PK composta `(consumer_name, message_id)`.
-3. **✅ Enforce invariants in schema** (spec §5.9, §6) — only what SPEC needs, na migration `..._init`:
+3. **✅ Enforce invariants in schema** (spec §5 item 9, §6) — only what SPEC needs, na migration `..._init`:
    - `wallet`: PK; **unique `(player_id, currency)`**; **CHECK `balance_amount >= 0`**;
    - `wager_transaction`: unique `(provider_id, external_transaction_id)` e `(provider_id, idempotency_key)`; FK `wallet_id → wallet`; FK `reference_transaction_id → wager_transaction` (auto-ref);
    - `wallet_ledger_entry`: FK `wallet_id` e `transaction_id`; **CHECK `balance_after = balance_before ± amount`** por direção; **imutabilidade** via trigger `BEFORE UPDATE OR DELETE`; unique `transaction_id` (≤ 1 lançamento/transação);
    - `inbox_message`: PK composta `(consumer_name, message_id)` (dedup persistente, §10).
-   - Adiado até ter lógica consumidora: índices parciais de single-reversal (§7.4) e colunas de lock.
+   - Adiado até ter lógica consumidora: índices parciais de single-reversal (spec §7 regras 3–4) e colunas de lock.
 4. **No `MikroOrmModule.forRoot` yet.** Validate the schema via a MikroORM-only integration test against a real Postgres container (dedicated test DB). Wire the Nest module (`forRoot` with the same config) at the start of Phase 3, when the first repository/use case needs the `EntityManager` — from that point app boot depends on Postgres.
-5. **✅ Versioned reversible migrations** (`migration:create|up|down`, `emit: 'ts'`, snapshot) — migration inicial `..._init` **criada e aplicada** no Postgres local (tabelas/constraints/trigger verificados). **Teste de integração** `test/migrations.e2e-spec.ts` (MikroORM puro, DB dedicado `desafio_jungle_mig_test_*`): cria DB fresco, `up()`, valida tabelas + constraints + trigger + rejeição de CHECK, e prova reversibilidade com `down()` (spec §13, sem mocks).
+5. **✅ Versioned reversible migrations** (`migration:create|up|down`, `emit: 'ts'`, snapshot) — migration inicial `..._init` **criada e aplicada** no Postgres local (tabelas/constraints/trigger verificados). **Teste de integração** `test/migrations.e2e.test.ts` (MikroORM puro, DB dedicado `desafio_jungle_mig_test_*`): cria DB fresco, `up()`, valida tabelas + constraints + trigger + rejeição de CHECK, e prova reversibilidade com `down()` (spec §13, sem mocks).
 
 ## Phase 3 — Application services & HTTP API
 
 1. **✅ Register `MikroOrmModule.forRoot(shared config)`** (Phase 2 config) + request-context middleware when repositories appear; app boot now requires Postgres. (v7: `@mikro-orm/nestjs` regista o `RequestContext` automaticamente via `configure()`, salvo `registerRequestContext: false`.)
-2. Wallet use case: `POST /wallets` (create wallet; `OPENING` internal transaction + `CREDIT` ledger entry in the **same SQL transaction**; duplicate playerId+currency → conflict). Apply `DEFAULT_CURRENCY = BRL` at this boundary.
+2. **✅ Wallet use case: `POST /wallets`** (create wallet; `OPENING` internal transaction + `CREDIT` ledger entry in the **same SQL transaction**; duplicate playerId+currency → conflict). Apply `DEFAULT_CURRENCY = BRL` at this boundary.
    - **OPENING is an internal channel (§6.3)** and must NOT go through the shared submit use case: `applyWagerTransaction` rejects OPENING on purpose. Wallet creation gets its own path that persists the internal OPENING transaction + CREDIT ledger entry atomically.
 3. Wager transaction use case (**shared by HTTP and SQS — one code path**, spec §10):
    - validate payload; compute canonical `payloadHash`; enforce idempotency-key semantics (identical → replay with original result incl. balance; same key + different payload → conflict);
    - apply §7 rules; resolve references by `(providerId, referenceExternalTransactionId)` within same provider/player/wallet/currency/round;
    - reference missing → `PENDING_REFERENCE`; reprocess **both** when the reference later arrives and via a simple scheduled worker (plain polling — no cron/scheduler infra) with exponential backoff + TTL (§7.1). TTL exhausted → `REJECTED` with the missing-reference `failureCode`; the rejection event is persisted only once the outbox exists (Phase 4/§11);
-   - `REFUND`/`ROLLBACK` single-reversal guard and the distinct `failureCode` when a reversal would overdraw (§7.9). In Phase 3 the "already reversed" check is done in the use case (query/domain); the DB-level partial unique index (§7.4/§5.9) is deferred to Phase 4, when the reversal flow lands;
+   - `REFUND`/`ROLLBACK` single-reversal guard and the distinct `failureCode` when a reversal would overdraw (spec §7 rule 9). In Phase 3 the "already reversed" check (spec §7 rules 3–4) is done in the use case (query/domain); the DB-level partial unique index (§5 item 9) is deferred to Phase 4, when the reversal flow lands;
    - concurrency: even though §8 is hardened and race-tested in Phase 5, the transactional use case already acquires minimal per-wallet protection (row lock on the wallet or `version` check) so concurrent HTTP bets cannot double-spend.
 4. Read endpoints: `GET /wallets/:walletId`, ledger with stable opaque cursor, transaction lookups by internal id and by provider ref.
 5. Reconciliation `POST /wallets/:walletId/reconciliation` (stored vs ledger-reconstructed; log + metric on divergence, never silently fix).

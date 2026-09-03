@@ -1,10 +1,9 @@
+import { describe, expect, it, spyOn } from 'bun:test';
 import { runWithCorrelationId } from '../correlation/correlation-id.context.js';
 import { JsonLogger } from './json.logger.js';
 
 function capture(stream: 'stdout' | 'stderr', fn: () => void): string {
-  const write = vi
-    .spyOn(process[stream], 'write')
-    .mockImplementation(() => true);
+  const write = spyOn(process[stream], 'write').mockImplementation(() => true);
   let raw: string | undefined;
   try {
     fn();

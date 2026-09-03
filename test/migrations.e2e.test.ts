@@ -23,9 +23,9 @@ function optionsFor(dbName: string) {
 async function dropDatabaseIfExists(): Promise<void> {
   const admin = await MikroORM.init(optionsFor(ADMIN_DB));
   try {
-    await admin.em.getConnection().execute(
-      `drop database if exists "${TEST_DB}" with (force)`,
-    );
+    await admin.em
+      .getConnection()
+      .execute(`drop database if exists "${TEST_DB}" with (force)`);
   } finally {
     await admin.close(true);
   }

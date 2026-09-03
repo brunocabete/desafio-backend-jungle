@@ -3,7 +3,9 @@ import { defineEntity, p } from '@mikro-orm/postgresql';
 export const WalletEntity = defineEntity({
   name: 'Wallet',
   tableName: 'wallet',
-  uniques: [{ name: 'uq_wallet_player_currency', properties: ['playerId', 'currency'] }],
+  uniques: [
+    { name: 'uq_wallet_player_currency', properties: ['playerId', 'currency'] },
+  ],
   checks: [
     {
       name: 'ck_wallet_balance_non_negative',
