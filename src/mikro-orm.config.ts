@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { defineConfig } from '@mikro-orm/postgresql';
+import { Migrator } from '@mikro-orm/migrations';
 import { WalletEntity } from './db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from './db/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from './db/entities/wallet-ledger-entry.entity.js';
@@ -15,6 +16,7 @@ export default defineConfig({
   dbName: env('POSTGRES_DB', 'myapp'),
   user: env('POSTGRES_USER', 'myapp'),
   password: env('POSTGRES_PASSWORD', 'secret'),
+  extensions: [Migrator],
   entities: [
     WalletEntity,
     WagerTransactionEntity,

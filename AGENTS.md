@@ -15,14 +15,14 @@ This is the **Jungle Gaming "distributed wagering processor" challenge**. The re
 - Single file: `bunx vitest run src/path/file.spec.ts`; for e2e add `--config vitest.config.e2e.ts`
 - Lint: `bun run lint` = `oxlint src/ test/` (not eslint)
 - Format: `bun run format` = prettier (single quotes, trailing commas)
-- Migrations: `bun run migration:create|up|down` → `mikro-orm ...` — **will fail until a MikroORM config file exists; none has been created yet.**
+- Migrations: `bun run migration:create|up|down` → `mikro-orm ...` using `src/mikro-orm.config.ts` (TS via `tsx`; requires Postgres de pé — ver infra abaixo).
 
 ## Toolchain quirks
 
 - Pure ESM (`"type": "module"`, `module: nodenext`): **relative imports must use the `.js` extension** (e.g. `import { AppModule } from './app.module.js'`) even though files are `.ts`. Existing scaffold code already follows this.
 - Vitest globals enabled (`types: ["vitest/globals", "node"]`): `describe`/`it`/`expect` are global; tests don't import them.
 - Test runner is Vitest **only** (no Jest config exists — don't add jest).
-- `tsconfig.build.tsbuildinfo` is committed (incremental build artifact); leave it alone.
+- `*.tsbuildinfo` (incl. `tsconfig.build.tsbuildinfo`) is a **generated incremental-build cache** and is **gitignored** — it is recreated by `nest build`/`tsc`; never commit it and don't rely on it.
 
 ## Local infra (Docker Compose)
 

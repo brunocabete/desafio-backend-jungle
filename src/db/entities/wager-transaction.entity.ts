@@ -1,4 +1,5 @@
 import { defineEntity, p } from '@mikro-orm/postgresql';
+import { WalletEntity } from './wallet.entity.js';
 
 export const WagerTransactionEntity = defineEntity({
   name: 'WagerTransaction',
@@ -19,7 +20,8 @@ export const WagerTransactionEntity = defineEntity({
     externalTransactionId: p.string().columnType('varchar(128)'),
     idempotencyKey: p.string().columnType('varchar(255)'),
     payloadHash: p.string().columnType('varchar(64)'),
-    walletId: p.uuid(),
+    walletId: () =>
+      p.manyToOne(WalletEntity).mapToPk().fieldName('wallet_id').deleteRule('no action'),
     playerId: p.string().columnType('varchar(64)'),
     roundId: p.string().columnType('varchar(128)'),
     gameId: p.string().columnType('varchar(128)'),
@@ -28,7 +30,13 @@ export const WagerTransactionEntity = defineEntity({
     moneyAmount: p.string().columnType('numeric(20,2)'),
     moneyCurrency: p.string().columnType('varchar(3)'),
     referenceExternalTransactionId: p.string().columnType('varchar(128)').nullable(),
-    referenceTransactionId: p.uuid().nullable(),
+    referenceTransactionId: () =>
+      p
+        .manyToOne(WagerTransactionEntity)
+        .mapToPk()
+        .fieldName('reference_transaction_id')
+        .nullable()
+        .deleteRule('no action'),
     failureCode: p.string().columnType('varchar(64)').nullable(),
     createdAt: p.datetime().columnType('timestamptz'),
     processedAt: p.datetime().columnType('timestamptz').nullable(),

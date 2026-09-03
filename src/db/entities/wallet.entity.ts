@@ -4,6 +4,12 @@ export const WalletEntity = defineEntity({
   name: 'Wallet',
   tableName: 'wallet',
   uniques: [{ name: 'uq_wallet_player_currency', properties: ['playerId', 'currency'] }],
+  checks: [
+    {
+      name: 'ck_wallet_balance_non_negative',
+      expression: '"balance_amount" >= 0',
+    },
+  ],
   properties: {
     id: p.uuid().primary(),
     playerId: p.string().columnType('varchar(64)'),

@@ -10,7 +10,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 |---|---|
 | 0 — Foundation | ✅ done |
 | 1 — Money and domain model | ✅ done (135 unit tests) |
-| 2 — DB schema, migrations, ORM | 🚧 item 1 done; items 2–5 pending |
+| 2 — DB schema, migrations, ORM | 🚧 items 1–3 done (migration inicial criada e aplicada); item 5 aguarda teste em container limpo; item 4 adiado (forRoot na Fase 3) |
 | 3 — Application services & HTTP API | pending |
 | 4 — SQS consumer + transactionality | pending |
 | 5 — Concurrency hardening | pending |
@@ -47,15 +47,15 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 Goal: make the invariants from spec §6 real in PostgreSQL (§5.9), with **no Nest wiring yet** — the app has no DB consumer until Phase 3. Avoid: custom two-column MikroORM types, extra mapping layers, speculative indexes/triggers, `@Version` double-counting.
 
 1. **✅ MikroORM config + CLI** — `src/mikro-orm.config.ts` (`defineConfig` from `@mikro-orm/postgresql`), driver wired to `DATABASE_HOST/PORT` + `POSTGRES_DB/USER/PASSWORD`; `mikro-orm.configPaths` in `package.json`; deps `@mikro-orm/cli` + `tsx` (TS loader for the CLI). Migrations: TS in `src/migrations` (dev), JS in `dist/migrations` (prod). Verify: `bun run mikro-orm debug` finds the config; connection to local Postgres succeeds.
-2. **Entities** — ORM entities for `wallet`, `wager_transaction`, `wallet_ledger_entry`, `inbox_message`, `outbox_message`. Money = **exact columns** (`amount numeric` + `currency varchar(3)`), read back as string and rehydrated via `Money.from` — no custom ORM type. `wallet.version` is a **plain column** (domain increments it; do NOT add `@Version` on top).
-3. **Enforce invariants in schema** (spec §5.9, §6) — only what SPEC needs, via migration:
-   - `wallet`: PK; **unique `(player_id, currency)`**; **CHECK `amount >= 0`**;
-   - `wager_transaction`: natural-key uniqueness (provider/external id or idempotency key — avoid redundant duplicate indexes); FK to `wallet`;
-   - `wallet_ledger_entry`: FK to `wallet` and `wager_transaction`; **CHECK `balance_after = balance_before ± amount`** by direction; immutability via a single `BEFORE UPDATE OR DELETE` trigger; unique `transaction_id` (≤ 1 ledger entry per transaction, §6.4/§7);
-   - `inbox_message`: **unique `(consumer_name, message_id)`** (persistent dedup, §10).
-   - Defer until they have consuming logic: reversal single-use partial indexes (§7.4) and any concurrency-lock columns.
+2. **✅ Entities** — ORM schemas (`defineEntity`, v7 sem decorators) para `wallet`, `wager_transaction`, `wallet_ledger_entry`, `inbox_message`, `outbox_message`. Money = **exact columns** (`amount numeric(20,2)` mapeado como string + `currency varchar(3)`), read back as string and rehydrated via `Money.from` — no custom ORM type. `wallet.version` is a **plain column** (domain increments it; do NOT add `@Version` on top). `inbox_message` usa PK composta `(consumer_name, message_id)`.
+3. **✅ Enforce invariants in schema** (spec §5.9, §6) — only what SPEC needs, na migration `..._init`:
+   - `wallet`: PK; **unique `(player_id, currency)`**; **CHECK `balance_amount >= 0`**;
+   - `wager_transaction`: unique `(provider_id, external_transaction_id)` e `(provider_id, idempotency_key)`; FK `wallet_id → wallet`; FK `reference_transaction_id → wager_transaction` (auto-ref);
+   - `wallet_ledger_entry`: FK `wallet_id` e `transaction_id`; **CHECK `balance_after = balance_before ± amount`** por direção; **imutabilidade** via trigger `BEFORE UPDATE OR DELETE`; unique `transaction_id` (≤ 1 lançamento/transação);
+   - `inbox_message`: PK composta `(consumer_name, message_id)` (dedup persistente, §10).
+   - Adiado até ter lógica consumidora: índices parciais de single-reversal (§7.4) e colunas de lock.
 4. **No `MikroOrmModule.forRoot` yet.** Validate the schema via a MikroORM-only integration test against a real Postgres container (dedicated test DB). Wire the Nest module (`forRoot` with the same config) at the start of Phase 3, when the first repository/use case needs the `EntityManager` — from that point app boot depends on Postgres.
-5. **Versioned reversible migrations** (`bun run migration:create|up|down`, `emit: 'ts'`, snapshot) + integration test that migrations apply cleanly on a fresh Postgres container and the constraints above exist (spec §13: no full-mock substitutes).
+5. **Versioned reversible migrations** (`migration:create|up|down`, `emit: 'ts'`, snapshot) — migration inicial `..._init` **criada e aplicada** no Postgres local (tabelas/constraints/trigger verificados). Falta: teste de integração que migrations apliquem em **container limpo** e as constraints existam (spec §13, sem mocks).
 
 ## Phase 3 — Application services & HTTP API
 

@@ -274,3 +274,8 @@ Sincronia entre mapa, tipo e descrições é garantida por teste (`failure-code.
   `wallet_ledger_entry(transaction_id)` (≤1 entry por transação).
 - **Próximo (item 3):** FKs, `CHECK`s (saldo ≥ 0; ledger `balance_after = balance_before ± money`)
   e trigger de imutabilidade do ledger — na migration, não via builder.
+- **Item 3 (invariantes no schema) implementado** via migration `Migration..._init`:
+  - FKs modeladas como relations `manyToOne(...).mapToPk().fieldName('wallet_id'|'transaction_id'|'reference_transaction_id')` (coluna escalar + FK gerada; `.deleteRule('no action')`);
+  - CHECKs declarados no schema (`checks: [...]`): `wallet.balance_amount >= 0`; ledger `balance_after = balance_before ± money` conforme `direction`;
+  - **imutabilidade do ledger** fora do metadata: trigger `BEFORE UPDATE OR DELETE` + função `plpgsql`, adicionados à mão na migration (reversível no `down()`);
+  - extensão `Migrator` registrada no config (`@mikro-orm/migrations`); migration inicial aplicada no Postgres local e constraints validadas por SQL (trigger, CHECKs e uniques rejeitam violações e rollback limpa os dados).
