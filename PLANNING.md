@@ -61,11 +61,13 @@ Goal: make the invariants from spec §6 real in PostgreSQL (§5.9), with **no Ne
 
 1. Register **`MikroOrmModule.forRoot(shared config)`** (Phase 2 config) + request-context middleware when repositories appear; app boot now requires Postgres.
 2. Wallet use case: `POST /wallets` (create wallet; `OPENING` internal transaction + `CREDIT` ledger entry in the **same SQL transaction**; duplicate playerId+currency → conflict). Apply `DEFAULT_CURRENCY = BRL` at this boundary.
+   - **OPENING is an internal channel (§6.3)** and must NOT go through the shared submit use case: `applyWagerTransaction` rejects OPENING on purpose. Wallet creation gets its own path that persists the internal OPENING transaction + CREDIT ledger entry atomically.
 3. Wager transaction use case (**shared by HTTP and SQS — one code path**, spec §10):
    - validate payload; compute canonical `payloadHash`; enforce idempotency-key semantics (identical → replay with original result incl. balance; same key + different payload → conflict);
    - apply §7 rules; resolve references by `(providerId, referenceExternalTransactionId)` within same provider/player/wallet/currency/round;
-   - reference missing → `PENDING_REFERENCE`, scheduled worker with exponential backoff + TTL (§7.1);
-   - `REFUND`/`ROLLBACK` single-reversal guard (reuse the DB-side uniqueness decided here); distinct `failureCode` when a reversal would overdraw (§7.9).
+   - reference missing → `PENDING_REFERENCE`; reprocess **both** when the reference later arrives and via a simple scheduled worker (plain polling — no cron/scheduler infra) with exponential backoff + TTL (§7.1). TTL exhausted → `REJECTED` with the missing-reference `failureCode`; the rejection event is persisted only once the outbox exists (Phase 4/§11);
+   - `REFUND`/`ROLLBACK` single-reversal guard and the distinct `failureCode` when a reversal would overdraw (§7.9). In Phase 3 the "already reversed" check is done in the use case (query/domain); the DB-level partial unique index (§7.4/§5.9) is deferred to Phase 4, when the reversal flow lands;
+   - concurrency: even though §8 is hardened and race-tested in Phase 5, the transactional use case already acquires minimal per-wallet protection (row lock on the wallet or `version` check) so concurrent HTTP bets cannot double-spend.
 4. Read endpoints: `GET /wallets/:walletId`, ledger with stable opaque cursor, transaction lookups by internal id and by provider ref.
 5. Reconciliation `POST /wallets/:walletId/reconciliation` (stored vs ledger-reconstructed; log + metric on divergence, never silently fix).
 6. Health checks `GET /health/live` + `GET /health/ready` (Postgres + SQS), open (no auth) — readiness probe reused in Phase 6.
