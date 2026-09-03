@@ -22,7 +22,7 @@ Development roadmap. Authoritative requirements: `SPECS.MD`. Each step is meant 
    - `IntegrationEvent<T>` abstract envelope + concrete subclasses (`WalletBalanceChanged`, etc., spec §11)
    - `FailureCode` taxonomy (documented, machine-readable)
 4. Write exhaustive unit tests for Money, Wallet invariants, BET/WIN/LOSS/REFUND/ROLLBACK rules, currency conflicts, diverging idempotency payloads, and status transition guards.
-5. Produce `ARCHITECTURE.md` early (decision log is a scoring requirement §14) and keep it updated as you go.
+5. Produce `ARCHITECTURE_SUGGESTIONS.md` early (decision log is a scoring requirement §14) and keep it updated as you go. The human will write the real ARCHITECTURE.md based on the result of the decisions made.
 
 ## Phase 2 — DB schema, migrations, ORM
 
