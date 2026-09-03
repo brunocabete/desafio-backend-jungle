@@ -1,103 +1,121 @@
 # PLANNING.md — Jungle Gaming Distributed Wagering Processor
 
-Development roadmap. Authoritative requirements: `SPECS.MD`. Each step is meant to be a reviewable milestone; write tests alongside each.
+Development roadmap. Authoritative requirements: `SPECS.MD`. **`ARCHITECTURE_SUGGESTIONS.md` is the running decision log** (started in Phase 1, item 5); the human consolidates the final `ARCHITECTURE.md` in Phase 8.
 
-## Phase 0 — Foundation (scaffold cleanup)
+Every phase is a reviewable milestone: **write tests alongside each change**, keep `lint` + `typecheck` green, and prefer the simplest code that satisfies `SPECS.MD` — no extra tables, abstractions, indexes or triggers beyond what a phase needs.
 
-1. Remove the stock NestJS scaffold noise: drop `AppController`/`AppService`/`Hello World` and the `@nestjs/observe` placeholder wiring (or replace with your own health/metrics plan, spec §12).
-2. Configure NestJS `main.ts`: global `ValidationPipe`, request `correlationId` propagation, structured JSON logging.
-3. Add `.env.example` documenting the env vars already required by `.env` (gitignored).
-4. Update `docker/ministack/init/01-create-queues.sh` to create FIFO queues `wager-transactions.fifo` + `wager-transactions-dlq.fifo` (spec §10) and set redrive policy (DLQ); recreate containers to verify.
-5. Verify the full command surface works: `bun run start:dev`, `test`, `test:e2e`, `lint`, `format`.
+## Progress
 
-## Phase 1 — Money and domain model (pure TS, no infra)
+| Phase | Status |
+|---|---|
+| 0 — Foundation | ✅ done |
+| 1 — Money and domain model | ✅ done (135 unit tests) |
+| 2 — DB schema, migrations, ORM | 🚧 item 1 done; items 2–5 pending |
+| 3 — Application services & HTTP API | pending |
+| 4 — SQS consumer + transactionality | pending |
+| 5 — Concurrency hardening | pending |
+| 6 — Observability | pending |
+| 7 — Test matrix | pending |
+| 8 — Documentation & final pass | pending |
 
-1. Add a decimal-arithmetic dependency (e.g. `decimal.js` — must never use `number` for money).
-2. Implement `Money` per spec §6.1: immutable, decimal-string boundary with 2-decimal scale, currency checks, rejection of invalid inputs (NaN/Infinity/scientific/empty/extra precision). Multi-currency model but default everything to `BRL`.
-3. Implement domain skeletons per §6.3–6.5 with **private constructors + static factories** (`create`, `from`, `rehydrate` — rehydrate never re-validates transitions):
-   - `Wallet` (aggregate root; `balance`, `version` starts at 1, increments only on balance change)
-   - `WagerTransaction` + `WagerTransactionKind`/`Status` enums + explicit terminal-state transitions
-   - `WalletLedgerEntry` (structurally immutable; `create` validates `balanceBefore ± money === balanceAfter`)
-   - `InboxMessage`, `OutboxMessage` (retry/backoff state machine)
-   - `IntegrationEvent<T>` abstract envelope + concrete subclasses (`WalletBalanceChanged`, etc., spec §11)
-   - `FailureCode` taxonomy (documented, machine-readable)
-4. Write exhaustive unit tests for Money, Wallet invariants, BET/WIN/LOSS/REFUND/ROLLBACK rules, currency conflicts, diverging idempotency payloads, and status transition guards.
-5. Produce `ARCHITECTURE_SUGGESTIONS.md` early (decision log is a scoring requirement §14) and keep it updated as you go. The human will write the real ARCHITECTURE.md based on the result of the decisions made.
+---
+
+## Phase 0 — Foundation (scaffold cleanup) ✅
+
+1. Remove stock NestJS scaffold noise (`AppController`/`AppService`/`Hello World`, `@nestjs/observe` placeholders).
+2. Configure `main.ts`: `correlationId` propagation + structured JSON logging (`JsonLogger`). (Global `ValidationPipe` arrives with the first HTTP endpoints, Phase 3.)
+3. Add `.env.example` documenting env vars required by `.env` (gitignored).
+4. Create FIFO queues `wager-transactions.fifo` + `wager-transactions-dlq.fifo` (spec §10) with redrive policy in `docker/ministack/init/01-create-queues.sh`; verify via compose.
+5. Verify the command surface: `bun run start:dev`, `test`, `test:e2e`, `lint`, `format`.
+
+## Phase 1 — Money and domain model (pure TS, no infra) ✅
+
+1. Add `decimal.js` (never `number`/`float` for money — spec §5.1).
+2. Implement `Money` per spec §6.1 (immutable, decimal-string boundary, 2-decimal scale, multi-currency with default `BRL`, invalid-input rejection). Kept lean: no redundant re-scaling in arithmetic — scale is guaranteed at the boundary and serialization.
+3. Implement domain skeletons per §6.3–6.5 with **private constructors + static factories** (`create`/`from`/`rehydrate`; `rehydrate` never re-validates transitions):
+   - `Wallet` (aggregate root; `version` starts at 1, increments only on balance change);
+   - `WagerTransaction` + kind/status enums + explicit terminal-state transitions (`ALLOWED_TRANSITIONS`);
+   - `WalletLedgerEntry` (structurally immutable; `create` validates `balanceBefore ± money === balanceAfter`);
+   - `InboxMessage`, `OutboxMessage` (retry/backoff state machine; backoff `200ms·2^(n-1)`, cap `30s`);
+   - `IntegrationEvent<T>` abstract envelope + concrete subclasses (spec §11);
+   - `FailureCode` taxonomy (documented, machine-readable) + canonical `payloadHash` (spec §9).
+4. Unit tests: Money, Wallet invariants, BET/WIN/LOSS/REFUND/ROLLBACK, currency conflicts, diverging idempotency payloads, status transition guards.
+5. Produce **`ARCHITECTURE_SUGGESTIONS.md`** as the ongoing decision log.
 
 ## Phase 2 — DB schema, migrations, ORM
 
-1. Add a MikroORM config (`mikro-orm.config.ts`) so `bun run migration:create|up|down` works; wire the driver to the Postgres env vars.
-2. Design entities: `wallet`, `wager_transaction`, `wallet_ledger_entry`, `inbox_message`, `outbox_message`. Money stored exactly (separate exact amount + currency columns, rehydrated as `Money`).
-3. Enforce invariants **in schema** (spec §5.9, §6), via unique indexes / constraints / FK:
-   - unique `wager_transaction (provider_id, external_transaction_id)`
-   - unique idempotency key per provider
-   - unique `wallet (player_id, currency)`
-   - **non-negative balance** CHECK constraint on wallet
-   - ledger immutable: no UPDATE/DELETE grants (or app-level guards) + CHECK `balance_after - balance_before` consistent with direction/amount
-   - unique processed-marker for inbox `(consumer_name, message_id)`
-4. Register entities in a Nest module (`MikroOrmModule.forRoot(...)`), map Money columns via a custom type/codec.
-5. Versioned reversible migrations + integration test that migrations apply cleanly on a fresh Postgres container.
+Goal: make the invariants from spec §6 real in PostgreSQL (§5.9), with **no Nest wiring yet** — the app has no DB consumer until Phase 3. Avoid: custom two-column MikroORM types, extra mapping layers, speculative indexes/triggers, `@Version` double-counting.
+
+1. **✅ MikroORM config + CLI** — `src/mikro-orm.config.ts` (`defineConfig` from `@mikro-orm/postgresql`), driver wired to `DATABASE_HOST/PORT` + `POSTGRES_DB/USER/PASSWORD`; `mikro-orm.configPaths` in `package.json`; deps `@mikro-orm/cli` + `tsx` (TS loader for the CLI). Migrations: TS in `src/migrations` (dev), JS in `dist/migrations` (prod). Verify: `bun run mikro-orm debug` finds the config; connection to local Postgres succeeds.
+2. **Entities** — ORM entities for `wallet`, `wager_transaction`, `wallet_ledger_entry`, `inbox_message`, `outbox_message`. Money = **exact columns** (`amount numeric` + `currency varchar(3)`), read back as string and rehydrated via `Money.from` — no custom ORM type. `wallet.version` is a **plain column** (domain increments it; do NOT add `@Version` on top).
+3. **Enforce invariants in schema** (spec §5.9, §6) — only what SPEC needs, via migration:
+   - `wallet`: PK; **unique `(player_id, currency)`**; **CHECK `amount >= 0`**;
+   - `wager_transaction`: natural-key uniqueness (provider/external id or idempotency key — avoid redundant duplicate indexes); FK to `wallet`;
+   - `wallet_ledger_entry`: FK to `wallet` and `wager_transaction`; **CHECK `balance_after = balance_before ± amount`** by direction; immutability via a single `BEFORE UPDATE OR DELETE` trigger; unique `transaction_id` (≤ 1 ledger entry per transaction, §6.4/§7);
+   - `inbox_message`: **unique `(consumer_name, message_id)`** (persistent dedup, §10).
+   - Defer until they have consuming logic: reversal single-use partial indexes (§7.4) and any concurrency-lock columns.
+4. **No `MikroOrmModule.forRoot` yet.** Validate the schema via a MikroORM-only integration test against a real Postgres container (dedicated test DB). Wire the Nest module (`forRoot` with the same config) at the start of Phase 3, when the first repository/use case needs the `EntityManager` — from that point app boot depends on Postgres.
+5. **Versioned reversible migrations** (`bun run migration:create|up|down`, `emit: 'ts'`, snapshot) + integration test that migrations apply cleanly on a fresh Postgres container and the constraints above exist (spec §13: no full-mock substitutes).
 
 ## Phase 3 — Application services & HTTP API
 
-1. Wallet use case: `POST /wallets` (create wallet; `OPENING` internal transaction + `CREDIT` ledger entry in the **same SQL transaction**; duplicate playerId+currency → conflict).
-2. Wager transaction use case (shared by HTTP and SQS — one code path, spec §10):
-   - validate payload; compute canonical `payloadHash`; enforce idempotency-key semantics (identical → replay with original result incl. balance; same key + different payload → conflict)
-   - apply §7 rules; resolve references by `(providerId, referenceExternalTransactionId)` same provider/player/wallet/currency/round
-   - reference missing → `PENDING_REFERENCE`, requeue/scheduled worker with exponential backoff + TTL (spec §7.1)
-   - `REFUND`/`ROLLBACK` single-reversal guard; explicit distinct `failureCode` when a reversal would go negative (§7.9)
-3. Read endpoints: `GET /wallets/:walletId`, ledger with stable opaque cursor pagination, transaction lookups by internal id and by provider ref.
-4. Reconciliation endpoint `POST /wallets/:walletId/reconciliation` (compare stored vs ledger-reconstructed balance; log + metric on divergence, never silently fix).
-5. Health checks `GET /health/live` + `GET /health/ready` (Postgres + SQS reachable), open (no auth).
-6. Decide status-code mapping and keep it consistent across endpoints (invalid payload / idempotency conflict / business rejection / pending acceptance / transient infra).
-7. Optional: external IdP (Keycloak/Zitadel) for API auth, or a documented no-op `AuthGuard` extension point (spec §2).
+1. Register **`MikroOrmModule.forRoot(shared config)`** (Phase 2 config) + request-context middleware when repositories appear; app boot now requires Postgres.
+2. Wallet use case: `POST /wallets` (create wallet; `OPENING` internal transaction + `CREDIT` ledger entry in the **same SQL transaction**; duplicate playerId+currency → conflict). Apply `DEFAULT_CURRENCY = BRL` at this boundary.
+3. Wager transaction use case (**shared by HTTP and SQS — one code path**, spec §10):
+   - validate payload; compute canonical `payloadHash`; enforce idempotency-key semantics (identical → replay with original result incl. balance; same key + different payload → conflict);
+   - apply §7 rules; resolve references by `(providerId, referenceExternalTransactionId)` within same provider/player/wallet/currency/round;
+   - reference missing → `PENDING_REFERENCE`, scheduled worker with exponential backoff + TTL (§7.1);
+   - `REFUND`/`ROLLBACK` single-reversal guard (reuse the DB-side uniqueness decided here); distinct `failureCode` when a reversal would overdraw (§7.9).
+4. Read endpoints: `GET /wallets/:walletId`, ledger with stable opaque cursor, transaction lookups by internal id and by provider ref.
+5. Reconciliation `POST /wallets/:walletId/reconciliation` (stored vs ledger-reconstructed; log + metric on divergence, never silently fix).
+6. Health checks `GET /health/live` + `GET /health/ready` (Postgres + SQS), open (no auth) — readiness probe reused in Phase 6.
+7. Consistent status-code mapping across endpoints (invalid payload / idempotency conflict / business rejection / pending acceptance / transient infra).
+8. Auth (§2): document the choice in `ARCHITECTURE_SUGGESTIONS.md`; if implementing, use an external IdP or a no-op `AuthGuard` extension point — no hand-rolled auth/user table.
 
 ## Phase 4 — SQS consumer + transactionality
 
-1. Transactional outbox: outbox row + inbox row + wallet change + ledger row committed **atomically in one SQL transaction** (§11). Never publish before commit.
-2. SQS consumer on `wager-transactions.fifo`, reusing the exact use case from Phase 3.
-3. Persistent inbox dedup by `(consumerName, messageId)`; `ack` only after commit; classify failures:
-   - business/terminal → ack
-   - transient → retry with backoff (visibility timeout)
-   - permanent → DLQ after max attempts (redrive policy)
-4. Graceful `SIGTERM`: finish in-flight messages or return visibility; support redelivery with no duplicated effects.
-5. Outbox publisher worker: safe under concurrent publishers (claim rows atomically, backoff, no loss/dup drift); publish idempotently safe for consumers.
+1. Transactional outbox: outbox row + inbox row + wallet change + ledger row committed **atomically in one SQL transaction** (§11); never publish before commit.
+2. SQS consumer on `wager-transactions.fifo`, reusing the exact Phase 3 use case.
+3. Persistent inbox dedup by `(consumerName, messageId)`; `ack` only after commit; failure classification: business/terminal → ack; transient → retry/backoff; permanent → DLQ after max attempts.
+4. Graceful `SIGTERM`: finish in-flight messages or return visibility; redelivery must not duplicate effects.
+5. Outbox publisher worker: safe under concurrent publishers (atomic claim, backoff, no loss/dup drift); publication idempotent for consumers.
 
 ## Phase 5 — Concurrency hardening
 
-1. Pick and justify a wallet-locking strategy (spec §8): pessimistic `FOR UPDATE` per wallet, or conditional atomic update with limited optimistic retries. Document in `ARCHITECTURE.md`.
-2. Guarantee no lost updates, no duplicate debits/credits, no negative balance under race; broker ordering/dedup is only an optimization — DB is the source of truth.
-3. Verify the mandatory scenario: wallet `100.00 BRL`, two concurrent `80.00` bets → one `PROCESSED`, one `REJECTED` (insufficient funds), balance `20.00`, exactly one debit entry, no retry duplication (§8).
+1. Implement and justify the wallet-locking strategy (spec §8): pessimistic `FOR UPDATE` per wallet vs conditional atomic update with limited optimistic retries — the domain already exposes `version` for optimistic checks; keep ONE mechanism (no double counting).
+2. No lost updates / duplicate debits / negative balance under race; broker ordering/dedup is only an optimization — the DB is the source of truth.
+3. Verify the mandatory scenario: wallet `100.00 BRL`, two concurrent `80.00` bets → one `PROCESSED`, one `REJECTED`, final `20.00`, exactly one debit entry, no retry duplication (§8).
 
 ## Phase 6 — Observability (§12)
 
 1. Structured JSON logs with `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; no sensitive/full financial payloads.
 2. Metrics: transactions by status, duplicates detected, retries, DLQ count, lock conflicts, outbox lag, processing latency.
-3. Wire health/ready checks (already in Phase 3) into a readiness probe.
+3. Wire `/health/ready` (Phase 3) into a readiness probe.
 
-## Phase 7 — Test matrix (spec §13, highest score weight on real concurrency)
+## Phase 7 — Test matrix (spec §13; real concurrency carries the most weight)
 
-1. Unit: already covered in Phase 1.
-2. Integration (real Postgres + MiniStack in containers): migrations/constraints, wallet+ledger+inbox+outbox atomicity, inbox/redelivery, concurrent outbox publishers, retry + DLQ, crash recovery.
+1. Unit: covered in Phase 1.
+2. Integration (real Postgres + MiniStack): migrations/constraints (Phase 2), wallet+ledger+inbox+outbox atomicity, inbox/redelivery, concurrent outbox publishers, retry + DLQ, crash recovery.
 3. Concurrency/race tests with real parallelism:
-   - same wager submitted 50× in parallel → single debit
-   - concurrent balance contention (spec §8 scenario)
-   - distinct wallets in parallel
-   - ≥3 simultaneous processes/instances
-   - worker killed after commit, before ack
-   - two outbox publishers
-   - ROLLBACK/REFUND arriving before the reference
-   - service restart with final consistency proven (`balance == ledger reconstruction`)
-4. Optional load test exposed as `bun run test:load` with honest methodology + p50/p95/p99 + error rate + lock conflicts + outbox lag.
+   - same wager submitted 50× in parallel → single debit;
+   - concurrent balance contention (spec §8 scenario);
+   - distinct wallets in parallel;
+   - ≥3 simultaneous processes/instances;
+   - worker killed after commit, before ack;
+   - two outbox publishers;
+   - ROLLBACK/REFUND arriving before the reference;
+   - service restart with final consistency proven (`balance == ledger reconstruction`).
+4. Optional load test as `bun run test:load` (honest methodology, p50/p95/p99, error rate, lock conflicts, outbox lag).
 
 ## Phase 8 — Documentation & final pass
 
-1. Rewrite `README.md` with real setup/commands (today it's NestJS boilerplate).
-2. Finalize `ARCHITECTURE.md`: domain/port boundaries, transaction + locking strategy, outbox/inbox design, SQS contract, failure-code taxonomy, trade-offs and known limitations (incl. auth decision, §2).
-3. Full `lint` + `format` + `test` + `test:e2e` green; check off §14 scoring table and eliminate every "eliminatory failure" (§14).
+1. Rewrite `README.md` with real setup/commands.
+2. Finalize `ARCHITECTURE.md` from `ARCHITECTURE_SUGGESTIONS.md`: boundaries, transaction + locking strategy, outbox/inbox design, SQS contract, failure-code taxonomy, trade-offs and limitations (incl. auth decision §2).
+3. Full `lint` + `format` + `test` + `test:e2e` green; walk the §14 scoring table and eliminate every "eliminatory failure".
 
-## Suggested execution order & dependencies
+## Execution order & standing rules
 
-- Phases are sequential (0 → 1 → 2 ...) except Phase 6 (observability) can start early.
-- `ARCHITECTURE.md` is a living doc: start in Phase 1, finalize in Phase 8.
-- Keep the "same use case for HTTP and SQS" property (Phase 3/4) from day one — retrofitting it later is costly.
+- Phases are sequential (0 → 8); Phase 6 observability can start early, but not before its data sources exist (Phase 3/4).
+- Keep the **same use case for HTTP and SQS** from the start — retrofitting is costly.
+- Keep the codebase lean: no new dependency, table, index, trigger, repository or module unless a phase needs it; log every conscious decision in `ARCHITECTURE_SUGGESTIONS.md`.
+- Re-run lint + typecheck + tests before closing each milestone.
