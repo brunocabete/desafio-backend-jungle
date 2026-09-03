@@ -1,35 +1,7 @@
 import { MikroORM } from '@mikro-orm/core';
-import { resolve } from 'node:path';
-import config from '../src/mikro-orm.config.js';
+import { dropDatabaseIfExists, ormOptionsFor } from './test-db.js';
 
-const ADMIN_DB = 'postgres';
 const TEST_DB = `desafio_jungle_mig_test_${process.pid}`;
-
-const MIGRATIONS_PATH = resolve('src/migrations');
-
-function optionsFor(dbName: string) {
-  return {
-    ...config,
-    dbName,
-    migrations: {
-      ...config.migrations,
-      path: MIGRATIONS_PATH,
-      pathTs: MIGRATIONS_PATH,
-      snapshot: false,
-    },
-  };
-}
-
-async function dropDatabaseIfExists(): Promise<void> {
-  const admin = await MikroORM.init(optionsFor(ADMIN_DB));
-  try {
-    await admin.em
-      .getConnection()
-      .execute(`drop database if exists "${TEST_DB}" with (force)`);
-  } finally {
-    await admin.close(true);
-  }
-}
 
 const APP_TABLES = [
   'wallet',
@@ -52,15 +24,15 @@ describe('migrations on a fresh Postgres database', () => {
   let orm: MikroORM;
 
   beforeAll(async () => {
-    await dropDatabaseIfExists();
-    orm = await MikroORM.init(optionsFor(TEST_DB));
+    await dropDatabaseIfExists(TEST_DB);
+    orm = await MikroORM.init(ormOptionsFor(TEST_DB));
   }, 60_000);
 
   afterAll(async () => {
     if (orm) {
       await orm.close(true);
     }
-    await dropDatabaseIfExists();
+    await dropDatabaseIfExists(TEST_DB);
   }, 60_000);
 
   it('applies up, creates tables + constraints, enforces them, and is reversible', async () => {

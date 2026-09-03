@@ -61,65 +61,48 @@ interface ParsedCreateWallet {
 export function parseCreateWallet(
   input: CreateWalletInput,
 ): ParsedCreateWallet {
-  if (
-    typeof input?.playerId !== 'string' ||
-    input.playerId.trim().length === 0
-  ) {
+  const playerId = input?.playerId;
+  if (typeof playerId !== 'string' || playerId.trim().length === 0) {
     throw new InvalidCreateWalletError('playerId is required');
   }
-  const playerId = input.playerId.trim();
-  if (playerId.length > 64) {
+  const normalizedPlayerId = playerId.trim();
+  if (normalizedPlayerId.length > 64) {
     throw new InvalidCreateWalletError(
       'playerId must be at most 64 characters',
     );
   }
 
   const initial = input.initialBalance;
-  if (initial !== undefined && initial !== null) {
-    if (
-      typeof initial !== 'object' ||
-      Array.isArray(initial) ||
-      initial.amount === undefined ||
-      initial.amount === null
-    ) {
-      throw new InvalidCreateWalletError(
-        'initialBalance.amount is required as a decimal string',
-      );
-    }
-    if (initial.currency !== undefined && initial.currency !== null) {
-      if (typeof initial.currency !== 'string') {
-        throw new InvalidCreateWalletError(
-          'initialBalance.currency must be a string',
-        );
-      }
-      if (initial.currency.length === 0) {
-        throw new InvalidCreateWalletError(
-          'initialBalance.currency cannot be empty',
-        );
-      }
-    }
-    const currency =
-      initial.currency === undefined || initial.currency === null
-        ? DEFAULT_CURRENCY
-        : initial.currency;
-    if (typeof initial.amount !== 'string') {
-      throw new InvalidCreateWalletError(
-        'initialBalance.amount must be a string',
-      );
-    }
-    try {
-      return {
-        playerId,
-        initialBalance: Money.from({ amount: initial.amount, currency }),
-      };
-    } catch (error) {
-      throw new InvalidCreateWalletError(
-        `invalid initialBalance: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+  if (initial === undefined || initial === null) {
+    return {
+      playerId: normalizedPlayerId,
+      initialBalance: Money.zero(DEFAULT_CURRENCY),
+    };
+  }
+  if (typeof initial !== 'object' || Array.isArray(initial)) {
+    throw new InvalidCreateWalletError('initialBalance must be an object');
   }
 
-  return { playerId, initialBalance: Money.zero(DEFAULT_CURRENCY) };
+  const { amount, currency } = initial;
+  if (typeof amount !== 'string' || amount.length === 0) {
+    throw new InvalidCreateWalletError(
+      'initialBalance.amount is required as a decimal string',
+    );
+  }
+
+  try {
+    return {
+      playerId: normalizedPlayerId,
+      initialBalance: Money.from({
+        amount,
+        currency: (currency ?? DEFAULT_CURRENCY) as string,
+      }),
+    };
+  } catch (error) {
+    throw new InvalidCreateWalletError(
+      `invalid initialBalance: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 export function toWalletView(wallet: Wallet): WalletView {
@@ -169,10 +152,7 @@ export class WalletService {
       });
       return toWalletView(wallet);
     } catch (error) {
-      if (
-        error instanceof UniqueConstraintViolationException &&
-        /uq_wallet_player_currency/.test(error.message)
-      ) {
+      if (error instanceof UniqueConstraintViolationException) {
         throw new WalletAlreadyExistsError(playerId, initialBalance.currency);
       }
       throw error;
@@ -180,6 +160,7 @@ export class WalletService {
   }
 
   private persistOpening(em: EntityManager, wallet: Wallet): void {
+    const balance = wallet.balance;
     const opening = WagerTransaction.create({
       id: Bun.randomUUIDv7(),
       providerId: INTERNAL_OPENING_PROVIDER,
@@ -193,19 +174,18 @@ export class WalletService {
         roundId: '',
         gameId: '',
         kind: WagerTransactionKind.Opening,
-        money: wallet.balance.toJSON(),
+        money: balance.toJSON(),
       }),
       walletId: wallet.id,
       playerId: wallet.playerId,
       roundId: '',
       gameId: '',
       kind: WagerTransactionKind.Opening,
-      money: wallet.balance,
+      money: balance,
       createdAt: wallet.createdAt,
     });
     opening.markProcessed(undefined, opening.createdAt);
 
-    const balance = wallet.balance;
     const zero = Money.zero(balance.currency);
     const entry = WalletLedgerEntry.create({
       id: Bun.randomUUIDv7(),

@@ -2,40 +2,12 @@ import { MikroORM } from '@mikro-orm/core';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
 import request from 'supertest';
-import config from '../src/mikro-orm.config.js';
 import { WalletEntity } from '../src/db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../src/db/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../src/db/entities/wallet-ledger-entry.entity.js';
 
-const ADMIN_DB = 'postgres';
 const TEST_DB = `desafio_jungle_wallet_test_${process.pid}`;
-const MIGRATIONS_PATH = resolve('src/migrations');
-
-function optionsFor(dbName: string) {
-  return {
-    ...config,
-    dbName,
-    migrations: {
-      ...config.migrations,
-      path: MIGRATIONS_PATH,
-      pathTs: MIGRATIONS_PATH,
-      snapshot: false,
-    },
-  };
-}
-
-async function dropTestDatabase(): Promise<void> {
-  const admin = await MikroORM.init(optionsFor(ADMIN_DB));
-  try {
-    await admin.em
-      .getConnection()
-      .execute(`drop database if exists "${TEST_DB}" with (force)`);
-  } finally {
-    await admin.close(true);
-  }
-}
 
 describe('POST /wallets (e2e)', () => {
   let app: INestApplication;
@@ -43,14 +15,15 @@ describe('POST /wallets (e2e)', () => {
   let previousDbName: string | undefined;
 
   beforeAll(async () => {
-    await dropTestDatabase();
-    const migrator = await MikroORM.init(optionsFor(TEST_DB));
-    await migrator.migrator.up();
-    await migrator.close(true);
-
     previousDbName = process.env.POSTGRES_DB;
     process.env.POSTGRES_DB = TEST_DB;
+    const helpers = await import('./test-db.js');
     const { AppModule } = await import('./../src/app.module.js');
+
+    await helpers.dropDatabaseIfExists(TEST_DB);
+    const migrator = await MikroORM.init(helpers.ormOptionsFor(TEST_DB));
+    await migrator.migrator.up();
+    await migrator.close(true);
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -64,7 +37,8 @@ describe('POST /wallets (e2e)', () => {
     if (app) {
       await app.close();
     }
-    await dropTestDatabase();
+    const helpers = await import('./test-db.js');
+    await helpers.dropDatabaseIfExists(TEST_DB);
     if (previousDbName === undefined) {
       delete process.env.POSTGRES_DB;
     } else {
