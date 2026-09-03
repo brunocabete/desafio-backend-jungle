@@ -6,8 +6,9 @@ import request from 'supertest';
 import { WalletEntity } from '../src/db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../src/db/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../src/db/entities/wallet-ledger-entry.entity.js';
+import { testDatabaseName } from './test-names.js';
 
-const TEST_DB = `desafio_jungle_wager_test_${process.pid}`;
+const TEST_DB = testDatabaseName('desafio_jungle_wager_test');
 
 interface WalletView {
   id: string;
@@ -21,10 +22,13 @@ describe('POST /wagering/transactions (e2e)', () => {
   let previousDbName: string | undefined;
   let provider: string;
   let extSeq = 0;
+  let previousPoll: string | undefined;
 
   beforeAll(async () => {
     previousDbName = process.env.POSTGRES_DB;
+    previousPoll = process.env.WAGER_PENDING_WORKER_POLL_MS;
     process.env.POSTGRES_DB = TEST_DB;
+    process.env.WAGER_PENDING_WORKER_POLL_MS = '0';
     const helpers = await import('./test-db.js');
     const { AppModule } = await import('./../src/app.module.js');
 
@@ -52,6 +56,11 @@ describe('POST /wagering/transactions (e2e)', () => {
       delete process.env.POSTGRES_DB;
     } else {
       process.env.POSTGRES_DB = previousDbName;
+    }
+    if (previousPoll === undefined) {
+      delete process.env.WAGER_PENDING_WORKER_POLL_MS;
+    } else {
+      process.env.WAGER_PENDING_WORKER_POLL_MS = previousPoll;
     }
   }, 60_000);
 

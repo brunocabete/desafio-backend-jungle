@@ -45,6 +45,8 @@ export const WagerTransactionEntity = defineEntity({
         .nullable()
         .deleteRule('no action'),
     failureCode: p.string().columnType('varchar(64)').nullable(),
+    attemptCount: p.integer().default(0),
+    nextAttemptAt: p.datetime().columnType('timestamptz').nullable(),
     createdAt: p.datetime().columnType('timestamptz'),
     processedAt: p.datetime().columnType('timestamptz').nullable(),
   },

@@ -11,7 +11,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 | 0 — Foundation | ✅ done |
 | 1 — Money and domain model | ✅ done (145 unit tests) |
 | 2 — DB schema, migrations, ORM | ✅ itens 1–3 e 5 done (migration inicial + teste de integração em DB limpo); item 4 adiado (forRoot na Fase 3) |
-| 3 — Application services & HTTP API | 🚧 itens 1–2 done (forRoot + boot exige Postgres; `POST /wallets`); item 3.1 done (`POST /wagering/transactions`); item 3.2 pending |
+| 3 — Application services & HTTP API | 🚧 itens 1–2 ✅ (`POST /wallets`); 3.1 ✅ (`POST /wagering/transactions`); 3.2 ✅ (worker `PENDING_REFERENCE`/TTL). Restam: 4 (GETs + ledger com cursor), 5 (reconciliation), 6 (health checks), 7 (mapeamento de status), 8 (auth) |
 | 4 — SQS consumer + transactionality | pending |
 | 5 — Concurrency hardening | pending |
 | 6 — Observability | pending |
@@ -69,7 +69,7 @@ Goal: make the invariants from spec §6 real in PostgreSQL (spec §5 item 9), wi
       - referência ausente → `PENDING_REFERENCE` persistido (202); quando a referência chega e fica terminal, reprocessa dependentes pendentes na **mesma SQL transaction** (fila em memória sob o lock da wallet);
       - concorrência mínima por wallet: `FOR UPDATE` na wallet + uniques `(provider, idempotency_key)`/`(provider, external_transaction_id)` como rede de segurança;
       - HTTP mapping: 400 `INVALID_PAYLOAD`, 404 `WALLET_NOT_FOUND`, 409 `IDEMPOTENCY_CONFLICT`, 422 rejeição de negócio (com `failureCode`), 202 `PENDING_REFERENCE`, 200 processado (replay preserva o código original).
-   3.2 Worker de reprocessamento de `PENDING_REFERENCE` (polling simples, backoff exponencial + TTL → `REJECTED UNRESOLVED_REFERENCE`, §7.1) — evento de rejeição só com a outbox (Fase 4).
+   3.2 **✅ Worker de reprocessamento de `PENDING_REFERENCE`** (`PendingReferenceScheduler` polling + `WagerTransactionService.reprocessPendingReferences`): colunas `attempt_count`/`next_attempt_at` (migration `..._add_pending_reference_retry`); backoff exponencial 200ms→30s (`pending-reference-retry.ts`), limite de tentativas e TTL → `REJECTED UNRESOLVED_REFERENCE`; re-tenta também quando a referência já está processada. Evento de rejeição persiste só com a outbox (Fase 4).
 4. Read endpoints: `GET /wallets/:walletId`, ledger with stable opaque cursor, transaction lookups by internal id and by provider ref.
 5. Reconciliation `POST /wallets/:walletId/reconciliation` (stored vs ledger-reconstructed; log + metric on divergence, never silently fix).
 6. Health checks `GET /health/live` + `GET /health/ready` (Postgres + SQS), open (no auth) — readiness probe reused in Phase 6.

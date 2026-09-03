@@ -6,8 +6,9 @@ import request from 'supertest';
 import { WalletEntity } from '../src/db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../src/db/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../src/db/entities/wallet-ledger-entry.entity.js';
+import { testDatabaseName } from './test-names.js';
 
-const TEST_DB = `desafio_jungle_wallet_test_${process.pid}`;
+const TEST_DB = testDatabaseName('desafio_jungle_wallet_test');
 
 describe('POST /wallets (e2e)', () => {
   let app: INestApplication;

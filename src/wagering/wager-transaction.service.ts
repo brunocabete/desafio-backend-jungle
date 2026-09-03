@@ -11,7 +11,10 @@ import {
   type MoneyProps,
 } from '../domain/money/money.js';
 import { Wallet, type WalletState } from '../domain/wallet/wallet.js';
-import type { FailureCode as FailureCodeType } from '../domain/failure-code.js';
+import {
+  FailureCode,
+  type FailureCode as FailureCodeType,
+} from '../domain/failure-code.js';
 import {
   WagerTransaction,
   WagerTransactionKind,
@@ -22,8 +25,16 @@ import {
   WalletLedgerEntry,
   LedgerDirection,
 } from '../domain/ledger/wallet-ledger-entry.js';
-import { applyWagerTransaction } from '../domain/wager/wager-transaction-applier.js';
+import {
+  applyWagerTransaction,
+  type WagerApplyResult,
+} from '../domain/wager/wager-transaction-applier.js';
 import { wagerPayloadHash } from '../domain/wager/idempotency.js';
+import {
+  PENDING_REFERENCE_MAX_ATTEMPTS,
+  PENDING_REFERENCE_TTL_MS,
+  schedulePendingReferenceRetryAt,
+} from './pending-reference-retry.js';
 import { WalletEntity } from '../db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../db/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../db/entities/wallet-ledger-entry.entity.js';
@@ -76,6 +87,13 @@ export interface NormalizedWagerSubmit {
   kind: WagerTransactionKind;
   money: MoneyProps;
   referenceExternalTransactionId?: string;
+}
+
+export interface ReprocessPendingOptions {
+  now?: Date;
+  ttlMs?: number;
+  maxAttempts?: number;
+  limit?: number;
 }
 
 export class InvalidWagerPayloadError extends Error {
@@ -263,6 +281,8 @@ interface WagerTransactionRow {
   referenceExternalTransactionId: string | null;
   referenceTransactionId: string | null;
   failureCode: string | null;
+  attemptCount: number;
+  nextAttemptAt: Date | null;
   createdAt: Date;
   processedAt: Date | null;
 }
@@ -319,6 +339,8 @@ interface WagerTransactionRowProps {
   referenceExternalTransactionId: string | null;
   referenceTransactionId: string | null;
   failureCode: string | null;
+  attemptCount: number;
+  nextAttemptAt: Date | null;
   createdAt: Date;
   processedAt: Date | null;
 }
@@ -356,6 +378,8 @@ function toWagerRowProps(
       transaction.referenceExternalTransactionId ?? null,
     referenceTransactionId: transaction.referenceTransactionId ?? null,
     failureCode: transaction.failureCode ?? null,
+    attemptCount: 0,
+    nextAttemptAt: null,
     createdAt: transaction.createdAt,
     processedAt: transaction.processedAt ?? null,
   };
@@ -472,18 +496,159 @@ export class WagerTransactionService {
       });
 
       em.create(WagerTransactionEntity, toWagerRowProps(transaction));
-      this.syncWalletRow(walletRow, wallet);
-
-      if (result.kind === 'processed' && result.entry) {
-        em.create(WalletLedgerEntryEntity, toLedgerRowProps(result.entry));
-      }
-
-      if (transaction.isTerminal() && isReferenceable(transaction.kind)) {
-        await em.flush();
-        await this.resolveDependents(em, walletRow, wallet, transaction, now);
-      }
+      await this.persistSettlement(
+        em,
+        walletRow,
+        wallet,
+        transaction,
+        result,
+        now,
+      );
 
       return this.viewFor(wallet, transaction, false);
+    });
+  }
+
+  private async persistSettlement(
+    em: EntityManager,
+    walletRow: WalletRow,
+    wallet: Wallet,
+    transaction: WagerTransaction,
+    result: WagerApplyResult,
+    now: Date,
+  ): Promise<void> {
+    this.syncWalletRow(walletRow, wallet);
+    if (result.kind === 'processed' && result.entry) {
+      em.create(WalletLedgerEntryEntity, toLedgerRowProps(result.entry));
+    }
+    if (transaction.isTerminal() && isReferenceable(transaction.kind)) {
+      await em.flush();
+      await this.resolveDependents(em, walletRow, wallet, transaction, now);
+    }
+  }
+
+  async reprocessPendingReferences(
+    options: ReprocessPendingOptions = {},
+  ): Promise<number> {
+    const now = options.now ?? new Date();
+    const em = this.orm.em.fork();
+    const due = (await em.find(
+      WagerTransactionEntity,
+      {
+        status: WagerTransactionStatus.PendingReference,
+        $or: [{ nextAttemptAt: null }, { nextAttemptAt: { $lte: now } }],
+      },
+      {
+        orderBy: { createdAt: 'ASC' },
+        limit: options.limit ?? 100,
+        fields: ['id', 'walletId'],
+      },
+    )) as unknown as WagerTransactionRow[];
+
+    let handled = 0;
+    for (const row of due) {
+      if (
+        await this.reprocessOne(
+          row.walletId,
+          row.id,
+          now,
+          options.maxAttempts ?? PENDING_REFERENCE_MAX_ATTEMPTS,
+          options.ttlMs ?? PENDING_REFERENCE_TTL_MS,
+        )
+      ) {
+        handled += 1;
+      }
+    }
+    return handled;
+  }
+
+  private async reprocessOne(
+    walletId: string,
+    transactionId: string,
+    now: Date,
+    maxAttempts: number,
+    ttlMs: number,
+  ): Promise<boolean> {
+    const em = this.orm.em.fork();
+    return em.transactional(async (em) => {
+      const walletRow = (await em.findOne(
+        WalletEntity,
+        { id: walletId },
+        { lockMode: LockMode.PESSIMISTIC_WRITE },
+      )) as unknown as WalletRow | null;
+      if (!walletRow) {
+        return false;
+      }
+
+      const current = (await em.findOne(WagerTransactionEntity, {
+        id: transactionId,
+      })) as unknown as WagerTransactionRow | null;
+      if (
+        !current ||
+        current.status !== WagerTransactionStatus.PendingReference ||
+        (current.nextAttemptAt !== null &&
+          current.nextAttemptAt.getTime() > now.getTime())
+      ) {
+        return false;
+      }
+
+      const wallet = Wallet.rehydrate(toWalletState(walletRow));
+      const transaction = WagerTransaction.rehydrate(toWagerState(current));
+
+      let reference: WagerTransaction | undefined;
+      if (transaction.requiresReference()) {
+        const referenceRow = (await em.findOne(WagerTransactionEntity, {
+          providerId: transaction.providerId,
+          externalTransactionId: transaction.referenceExternalTransactionId,
+        })) as unknown as WagerTransactionRow | null;
+        reference = referenceRow
+          ? WagerTransaction.rehydrate(toWagerState(referenceRow))
+          : undefined;
+      }
+
+      let referenceAlreadyReversed = false;
+      if (reference && reference.status === WagerTransactionStatus.Processed) {
+        referenceAlreadyReversed = await this.hasProcessedReversal(
+          em,
+          reference,
+        );
+      }
+
+      const result = applyWagerTransaction({
+        wallet,
+        transaction,
+        reference,
+        referenceAlreadyReversed,
+        now,
+      });
+
+      if (result.kind === 'pendingReference') {
+        const expired =
+          current.attemptCount >= maxAttempts ||
+          now.getTime() - current.createdAt.getTime() >= ttlMs;
+        if (expired) {
+          transaction.reject(FailureCode.UNRESOLVED_REFERENCE);
+          this.syncWagerRow(current, transaction);
+          await em.flush();
+          return true;
+        }
+        const attempts = current.attemptCount + 1;
+        current.attemptCount = attempts;
+        current.nextAttemptAt = schedulePendingReferenceRetryAt(attempts, now);
+        await em.flush();
+        return true;
+      }
+
+      this.syncWagerRow(current, transaction);
+      await this.persistSettlement(
+        em,
+        walletRow,
+        wallet,
+        transaction,
+        result,
+        now,
+      );
+      return true;
     });
   }
 
@@ -573,6 +738,7 @@ export class WagerTransactionService {
     row.referenceTransactionId = transaction.referenceTransactionId ?? null;
     row.failureCode = transaction.failureCode ?? null;
     row.processedAt = transaction.processedAt ?? null;
+    row.nextAttemptAt = null;
   }
 
   private syncWalletRow(row: WalletRow, wallet: Wallet): void {

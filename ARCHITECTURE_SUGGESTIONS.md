@@ -300,6 +300,18 @@ Sincronia entre mapa, tipo e descrições é garantida por teste (`failure-code.
 - **Decisões de validação de payload**: campos de negócio exigidos e com limite de tamanho do schema (evita estouro → 500); `playerId` deve ser o dono da wallet (senão 400); moeda default `BRL` na fronteira (consistente com `POST /wallets`). Erros estruturais NÃO são persistidos nem idempotentes (400 diz ao provedor para não reenviar); rejeições de regra são persistidas (REJECTED terminal, auditável).
 - Testes: unit do normalizer + reprocessamento do applier; e2e real (Postgres) cobrindo BET/WIN/LOSS/REFUND, replay processado e rejeitado, conflito, PENDING_REFERENCE + resolução on-arrival, dupla reversão, OPENING, 404 e 400.
 
-### Pendências (item 3.2 / Fases 4–5)
-- Worker de `PENDING_REFERENCE` com backoff + TTL (`UNRESOLVED_REFERENCE`) — exige colunas de tentativa/próximo retry no `wager_transaction` e eventos de rejeição via outbox (Fase 4).
+### Pendências (Fases 4–5)
 - Índice parcial único de single-reversal no schema (Fase 4) e a decisão final de locking (Fase 5).
+- Eventos de rejeição (`WagerTransactionRejected`) via outbox (Fase 4), incluindo o `UNRESOLVED_REFERENCE` do worker.
+
+---
+
+## 16. Fase 3, item 3.2 — Worker de `PENDING_REFERENCE` (backoff + TTL)
+
+- **Retry metadata no schema**: colunas `attempt_count int not null default 0` e `next_attempt_at timestamptz null` em `wager_transaction` (migration reversível `..._add_pending_reference_retry`, escrita à mão). Mantidas fora do domínio (`WagerTransaction` não carrega estado de retry — apenas o worker as lê/atualiza).
+- **Política (documentada, §7.1):** tentativa a cada `200ms · 2^(attempt-1)`, teto de `30s`, máximo de **10 tentativas** OU TTL de **5 minutos** desde `created_at` — o que vier primeiro → `REJECTED` com `UNRESOLVED_REFERENCE`. Constantes e helper puro em `src/wagering/pending-reference-retry.ts` (unit-testado). A janela é a tolerância para o BET/ref chegarem depois da reversão; o limite garante término auditável.
+- **`reprocessPendingReferences(options)`** no `WagerTransactionService` (reusa o mesmo caminho do submit): seleciona `PENDING_REFERENCE` "due" (`next_attempt_at` nulo/vencido, batch 100) e reprocessa **cada um na própria SQL transaction, sob `FOR UPDATE` da wallet** — mesma unidade de concorrência do §8. Sob o lock, re-lê a linha e aborta se não estiver mais pendente ou não devida (seguro com múltiplas instâncias: um worker que perde a corrida simplesmente não age).
+- **Fluxo por linha:** reaplica `applyWagerTransaction` com a referência atual (se processada, resolve; se ausente/pendente, permanece). Continua pendente → incrementa `attempt_count` e agenda `next_attempt_at` (backoff). Esgotado/expirou → `reject(UNRESOLVED_REFERENCE)` (terminal). Resolveu/rejeitou por regra → persiste como no submit (ledger/wallet/dependentes reutilizados via helper `persistSettlement`). `syncWagerRow` zera `next_attempt_at` ao terminalizar.
+- **Scheduler**: `PendingReferenceScheduler` (polling simples, sem cron — `setInterval` em `OnApplicationBootstrap`, intervalo padrão 2s, `WAGER_PENDING_WORKER_POLL_MS=0` desliga; usado pelos e2e), com guarda anti-sobreposição de ticks e shutdown limpo.
+- **Decisão de teste (harness)**: o e2e do worker **não sobe o app Nest** — instancia `MikroORM` (dbName explícito via `ormOptionsFor`) + `WalletService`/`WagerTransactionService` direto. Motivo: subir `AppModule` por arquivo depende de `process.env.POSTGRES_DB` + import dinâmico do config, o que fica frágil quando o `bun test` roda arquivos em paralelo (cache de módulo + env global). Nomes de DB de teste ganharam sufixo aleatório (`test-names.ts`).
+- Testes: unit (delay/agendamento) + e2e real: rejeição por TTL (`UNRESOLVED_REFERENCE`, sem mover saldo/ledger), backoff/limite de tentativas (linha rejeitada após N), "não due → skip" e teto do delay.

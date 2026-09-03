@@ -1,7 +1,8 @@
 import { MikroORM } from '@mikro-orm/core';
 import { dropDatabaseIfExists, ormOptionsFor } from './test-db.js';
+import { testDatabaseName } from './test-names.js';
 
-const TEST_DB = `desafio_jungle_mig_test_${process.pid}`;
+const TEST_DB = testDatabaseName('desafio_jungle_mig_test');
 
 const APP_TABLES = [
   'wallet',
@@ -39,6 +40,7 @@ describe('migrations on a fresh Postgres database', () => {
     const executed = await orm.migrator.up();
     expect(executed.map((m) => m.name)).toEqual([
       expect.stringContaining('_init'),
+      expect.stringContaining('_add_pending_reference_retry'),
     ]);
 
     const conn = orm.em.getConnection();
@@ -83,7 +85,7 @@ describe('migrations on a fresh Postgres database', () => {
       ),
     ).rejects.toThrow('ck_wallet_balance_non_negative');
 
-    await orm.migrator.down();
+    await orm.migrator.down({ to: 0 });
 
     const remaining = (
       await conn.execute(
