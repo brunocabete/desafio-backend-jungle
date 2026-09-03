@@ -22,10 +22,7 @@ import {
   WalletLedgerEntry,
   LedgerDirection,
 } from '../domain/ledger/wallet-ledger-entry.js';
-import {
-  applyWagerTransaction,
-  type WagerApplyResult,
-} from '../domain/wager/wager-transaction-applier.js';
+import { applyWagerTransaction } from '../domain/wager/wager-transaction-applier.js';
 import { wagerPayloadHash } from '../domain/wager/idempotency.js';
 import { WalletEntity } from '../db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../db/entities/wager-transaction.entity.js';
@@ -446,10 +443,6 @@ export class WagerTransactionService {
           normalized.referenceExternalTransactionId,
         createdAt: now,
       });
-      const txRow = em.create(
-        WagerTransactionEntity,
-        toWagerRowProps(transaction),
-      ) as unknown as WagerTransactionRow;
 
       let reference: WagerTransaction | undefined;
       if (transaction.requiresReference()) {
@@ -478,7 +471,7 @@ export class WagerTransactionService {
         now,
       });
 
-      this.syncWagerRow(txRow, transaction);
+      em.create(WagerTransactionEntity, toWagerRowProps(transaction));
       this.syncWalletRow(walletRow, wallet);
 
       if (result.kind === 'processed' && result.entry) {
@@ -486,10 +479,11 @@ export class WagerTransactionService {
       }
 
       if (transaction.isTerminal() && isReferenceable(transaction.kind)) {
+        await em.flush();
         await this.resolveDependents(em, walletRow, wallet, transaction, now);
       }
 
-      return this.viewFor(wallet, transaction, result, false);
+      return this.viewFor(wallet, transaction, false);
     });
   }
 
@@ -517,6 +511,11 @@ export class WagerTransactionService {
         { orderBy: { createdAt: 'ASC' } },
       )) as unknown as WagerTransactionRow[];
 
+      const alreadyReversedBase = await this.hasProcessedReversal(
+        em,
+        reference,
+      );
+
       for (const dependentRow of dependents) {
         if (handledIds.has(dependentRow.id)) {
           continue;
@@ -527,8 +526,7 @@ export class WagerTransactionService {
           toWagerState(dependentRow),
         );
         const referenceAlreadyReversed =
-          reversedReferenceIds.has(reference.id) ||
-          (await this.hasProcessedReversal(em, reference));
+          alreadyReversedBase || reversedReferenceIds.has(reference.id);
 
         const result = applyWagerTransaction({
           wallet,
@@ -586,7 +584,6 @@ export class WagerTransactionService {
   private viewFor(
     wallet: Wallet,
     transaction: WagerTransaction,
-    result: WagerApplyResult,
     idempotentReplay: boolean,
   ): WagerSubmitView {
     const view: WagerSubmitView = {
@@ -594,8 +591,8 @@ export class WagerTransactionService {
       status: transaction.status,
       idempotentReplay,
     };
-    if (result.kind === 'rejected') {
-      view.failureCode = result.failureCode;
+    if (transaction.status === WagerTransactionStatus.Rejected) {
+      view.failureCode = transaction.failureCode;
     }
     if (transaction.status !== WagerTransactionStatus.PendingReference) {
       view.balance = wallet.balance.toJSON();
@@ -631,15 +628,18 @@ export class WagerTransactionService {
     normalized: NormalizedWagerSubmit,
   ): Promise<WagerSubmitView> {
     const em = this.orm.em.fork();
-    const byKey = (await em.findOne(WagerTransactionEntity, {
-      providerId: normalized.providerId,
-      idempotencyKey: normalized.idempotencyKey,
+    const existing = (await em.findOne(WagerTransactionEntity, {
+      $or: [
+        {
+          providerId: normalized.providerId,
+          idempotencyKey: normalized.idempotencyKey,
+        },
+        {
+          providerId: normalized.providerId,
+          externalTransactionId: normalized.externalTransactionId,
+        },
+      ],
     })) as unknown as WagerTransactionRow | null;
-    const byExternal = (await em.findOne(WagerTransactionEntity, {
-      providerId: normalized.providerId,
-      externalTransactionId: normalized.externalTransactionId,
-    })) as unknown as WagerTransactionRow | null;
-    const existing = byKey ?? byExternal;
     if (!existing) {
       throw new Error(
         'idempotency conflict could not be resolved against an existing row',
