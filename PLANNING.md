@@ -10,7 +10,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 |---|---|
 | 0 — Foundation | ✅ done |
 | 1 — Money and domain model | ✅ done (135 unit tests) |
-| 2 — DB schema, migrations, ORM | 🚧 items 1–3 done (migration inicial criada e aplicada); item 5 aguarda teste em container limpo; item 4 adiado (forRoot na Fase 3) |
+| 2 — DB schema, migrations, ORM | ✅ itens 1–3 e 5 done (migration inicial + teste de integração em DB limpo); item 4 adiado (forRoot na Fase 3) |
 | 3 — Application services & HTTP API | pending |
 | 4 — SQS consumer + transactionality | pending |
 | 5 — Concurrency hardening | pending |
@@ -55,7 +55,7 @@ Goal: make the invariants from spec §6 real in PostgreSQL (§5.9), with **no Ne
    - `inbox_message`: PK composta `(consumer_name, message_id)` (dedup persistente, §10).
    - Adiado até ter lógica consumidora: índices parciais de single-reversal (§7.4) e colunas de lock.
 4. **No `MikroOrmModule.forRoot` yet.** Validate the schema via a MikroORM-only integration test against a real Postgres container (dedicated test DB). Wire the Nest module (`forRoot` with the same config) at the start of Phase 3, when the first repository/use case needs the `EntityManager` — from that point app boot depends on Postgres.
-5. **Versioned reversible migrations** (`migration:create|up|down`, `emit: 'ts'`, snapshot) — migration inicial `..._init` **criada e aplicada** no Postgres local (tabelas/constraints/trigger verificados). Falta: teste de integração que migrations apliquem em **container limpo** e as constraints existam (spec §13, sem mocks).
+5. **✅ Versioned reversible migrations** (`migration:create|up|down`, `emit: 'ts'`, snapshot) — migration inicial `..._init` **criada e aplicada** no Postgres local (tabelas/constraints/trigger verificados). **Teste de integração** `test/migrations.e2e-spec.ts` (MikroORM puro, DB dedicado `desafio_jungle_mig_test_*`): cria DB fresco, `up()`, valida tabelas + constraints + trigger + rejeição de CHECK, e prova reversibilidade com `down()` (spec §13, sem mocks).
 
 ## Phase 3 — Application services & HTTP API
 
