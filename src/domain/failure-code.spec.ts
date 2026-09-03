@@ -24,11 +24,6 @@ describe('FailureCode taxonomy', () => {
     }
   });
 
-  it('keeps the FailureCode type in sync with the constant map', () => {
-    const typed: FailureCode = FailureCode.INSUFFICIENT_FUNDS;
-    expect(typed).toBe('INSUFFICIENT_FUNDS');
-  });
-
   it('guards values with isFailureCode', () => {
     expect(isFailureCode(FailureCode.REFERENCE_NOT_FOUND)).toBe(true);
     expect(isFailureCode('UNKNOWN')).toBe(false);

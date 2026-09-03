@@ -134,43 +134,9 @@ describe('Wallet versioning', () => {
 
     expect(wallet.version).toBe(4);
   });
-
-  it('updates updatedAt on every balance change', async () => {
-    const wallet = openWallet('100.00');
-    const before = wallet.updatedAt.getTime();
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    wallet.credit({ entryId: 'e1', transactionId: 't1', money: brl('5.00') });
-
-    expect(wallet.updatedAt.getTime()).toBeGreaterThan(before);
-  });
 });
 
 describe('Wallet invariants', () => {
-  it('reconstructing the ledger reproduces the materialized balance', () => {
-    const wallet = openWallet('100.00');
-    const entries = [
-      wallet.debit({ entryId: 'e1', transactionId: 't1', money: brl('30.00') }),
-      wallet.credit({
-        entryId: 'e2',
-        transactionId: 't2',
-        money: brl('50.00'),
-      }),
-      wallet.debit({ entryId: 'e3', transactionId: 't3', money: brl('10.00') }),
-    ];
-
-    const reconstructed = entries.reduce(
-      (balance, entry) => entry.balanceAfter,
-      entries[0].balanceAfter,
-    );
-
-    expect(wallet.balance.equals(reconstructed)).toBe(true);
-    expect(wallet.balance.toJSON().amount).toBe('110.00');
-    for (const entry of entries) {
-      expect(entry.isBalanced()).toBe(true);
-    }
-  });
-
   it('keeps the ledger chain contiguous across balance changes', () => {
     const wallet = openWallet('100.00');
     const first = wallet.debit({

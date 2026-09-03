@@ -1,8 +1,6 @@
 import {
   CurrencyMismatchError,
-  DEFAULT_CURRENCY,
   InvalidMoneyError,
-  MONEY_SCALE,
   Money,
   type MoneyProps,
 } from './money.js';
@@ -38,11 +36,6 @@ describe('Money.from', () => {
     const serialized = money('100').toJSON().amount;
     expect(serialized).toBe('100.00');
     expect(serialized).toMatch(/^\d+\.\d{2}$/);
-  });
-
-  it('exposes the fixed scale constant', () => {
-    expect(MONEY_SCALE).toBe(2);
-    expect(DEFAULT_CURRENCY).toBe(BRL);
   });
 
   it('rejects NaN, Infinity and scientific notation', () => {

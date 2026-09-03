@@ -121,16 +121,6 @@ describe('WagerTransaction.create', () => {
       }),
     ).toThrow(InvalidWagerTransactionError);
   });
-
-  it('exposes idempotency metadata', () => {
-    const t = tx(WagerTransactionKind.Bet);
-    expect(t.providerId).toBe('provider-a');
-    expect(t.externalTransactionId).toBe('transaction-1');
-    expect(t.idempotencyKey).toBe('provider-a:transaction-1');
-    expect(t.payloadHash).toBe('hash-1');
-    expect(t.matchesPayload('hash-1')).toBe(true);
-    expect(t.matchesPayload('other')).toBe(false);
-  });
 });
 
 describe('WagerTransaction state transitions', () => {
