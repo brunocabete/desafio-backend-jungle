@@ -8,6 +8,7 @@ export const FailureCode = {
   INSUFFICIENT_FUNDS: 'INSUFFICIENT_FUNDS',
   REVERSAL_WOULD_OVERDRAW: 'REVERSAL_WOULD_OVERDRAW',
   REFERENCE_NOT_FOUND: 'REFERENCE_NOT_FOUND',
+  REFERENCE_NOT_PROCESSED: 'REFERENCE_NOT_PROCESSED',
   UNRESOLVED_REFERENCE: 'UNRESOLVED_REFERENCE',
   REFERENCE_SCOPE_MISMATCH: 'REFERENCE_SCOPE_MISMATCH',
   REFERENCE_ALREADY_REVERSED: 'REFERENCE_ALREADY_REVERSED',
@@ -35,6 +36,8 @@ export const FAILURE_CODE_DESCRIPTIONS: Record<FailureCode, string> = {
   REVERSAL_WOULD_OVERDRAW:
     'reversing the referenced transaction would drive the balance negative',
   REFERENCE_NOT_FOUND: 'referenced transaction was not found',
+  REFERENCE_NOT_PROCESSED:
+    'referenced transaction exists but is in a terminal non-PROCESSED state',
   UNRESOLVED_REFERENCE:
     'referenced transaction never arrived within the retry/TTL window',
   REFERENCE_SCOPE_MISMATCH:

@@ -8,6 +8,7 @@ import {
   WagerTransaction,
   WagerTransactionKind,
   WagerTransactionStatus,
+  type CreateWagerTransactionProps,
 } from './wager-transaction.js';
 
 function brl(amount: string): Money {
@@ -15,6 +16,23 @@ function brl(amount: string): Money {
 }
 
 const NOW = new Date('2026-09-03T12:00:00.000Z');
+
+function txProps(): CreateWagerTransactionProps {
+  return {
+    id: 'tx-1',
+    providerId: 'provider-a',
+    externalTransactionId: 'transaction-1',
+    idempotencyKey: 'provider-a:transaction-1',
+    payloadHash: 'hash-1',
+    walletId: 'wallet-1',
+    playerId: 'player-1',
+    roundId: 'round-1',
+    gameId: 'game-1',
+    kind: WagerTransactionKind.Bet,
+    money: brl('25.00'),
+    createdAt: NOW,
+  };
+}
 
 interface Overrides {
   kind?: WagerTransactionKind;
@@ -82,6 +100,24 @@ describe('WagerTransaction.create', () => {
     expect(() =>
       tx(WagerTransactionKind.Opening, {
         referenceExternalTransactionId: 'transaction-0',
+      }),
+    ).toThrow(InvalidWagerTransactionError);
+  });
+
+  it('requires a non-empty idempotency key', () => {
+    expect(() =>
+      WagerTransaction.create({
+        ...txProps(),
+        idempotencyKey: '   ',
+      }),
+    ).toThrow(InvalidWagerTransactionError);
+  });
+
+  it('requires a non-empty payload hash', () => {
+    expect(() =>
+      WagerTransaction.create({
+        ...txProps(),
+        payloadHash: '',
       }),
     ).toThrow(InvalidWagerTransactionError);
   });

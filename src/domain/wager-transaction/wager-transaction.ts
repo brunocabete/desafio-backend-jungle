@@ -137,6 +137,16 @@ export class WagerTransaction {
   ) {}
 
   static create(props: CreateWagerTransactionProps): WagerTransaction {
+    if (props.idempotencyKey.trim().length === 0) {
+      throw new InvalidWagerTransactionError(
+        'idempotencyKey is required and cannot be empty',
+      );
+    }
+    if (props.payloadHash.trim().length === 0) {
+      throw new InvalidWagerTransactionError(
+        'payloadHash is required and cannot be empty',
+      );
+    }
     if (WagerTransaction.requiresReference(props.kind)) {
       if (!props.referenceExternalTransactionId) {
         throw new MissingReferenceError(props.kind);
