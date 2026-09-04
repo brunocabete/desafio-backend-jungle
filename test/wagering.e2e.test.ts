@@ -391,6 +391,35 @@ describe('POST /wagering/transactions (e2e)', () => {
     expect(await creditEntries(wallet.id)).toBe(1);
   });
 
+  it('allows one REFUND and one ROLLBACK of the same BET', async () => {
+    const wallet = await createWallet('100.00');
+    const betExternal = `bet-cross-reversal-${randomUUID().slice(0, 8)}`;
+    await submit(wallet, {
+      kind: 'BET',
+      externalTransactionId: betExternal,
+      money: { amount: '25.00', currency: 'BRL' },
+    });
+
+    const refund = await submit(wallet, {
+      kind: 'REFUND',
+      money: { amount: '25.00', currency: 'BRL' },
+      referenceExternalTransactionId: betExternal,
+    });
+    const rollback = await submit(wallet, {
+      kind: 'ROLLBACK',
+      money: { amount: '25.00', currency: 'BRL' },
+      referenceExternalTransactionId: betExternal,
+    });
+
+    expect(refund.status).toBe(200);
+    expect(rollback.status).toBe(200);
+    expect(rollback.body).toMatchObject({
+      status: 'PROCESSED',
+      balance: { amount: '125.00', currency: 'BRL' },
+    });
+    expect(await creditEntries(wallet.id)).toBe(2);
+  });
+
   it('rejects OPENING submissions as a business rule', async () => {
     const wallet = await createWallet('100.00');
     const response = await submit(wallet, {

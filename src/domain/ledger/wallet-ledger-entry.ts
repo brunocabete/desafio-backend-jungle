@@ -55,8 +55,12 @@ export class WalletLedgerEntry {
     public readonly money: Money,
     public readonly balanceBefore: Money,
     public readonly balanceAfter: Money,
-    public readonly createdAt: Date,
+    private readonly _createdAt: Date,
   ) {}
+
+  get createdAt(): Date {
+    return new Date(this._createdAt.getTime());
+  }
 
   static create(props: CreateLedgerEntryProps): WalletLedgerEntry {
     WalletLedgerEntry.assertSameCurrency(
@@ -72,7 +76,7 @@ export class WalletLedgerEntry {
       props.money,
       props.balanceBefore,
       props.balanceAfter,
-      props.createdAt,
+      new Date(props.createdAt.getTime()),
     );
     if (!entry.isBalanced()) {
       throw new InvalidLedgerEntryError(
@@ -93,7 +97,7 @@ export class WalletLedgerEntry {
       Money.from(state.money),
       Money.from(state.balanceBefore),
       Money.from(state.balanceAfter),
-      state.createdAt,
+      new Date(state.createdAt.getTime()),
     );
   }
 

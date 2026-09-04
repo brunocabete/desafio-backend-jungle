@@ -63,11 +63,6 @@ const REFERENCEABLE_KINDS: ReadonlySet<WagerTransactionKind> = new Set([
   WagerTransactionKind.Refund,
 ]);
 
-const REVERSAL_KINDS = [
-  WagerTransactionKind.Refund,
-  WagerTransactionKind.Rollback,
-];
-
 export interface WagerSubmitView {
   transactionId: string;
   status: WagerTransactionStatus;
@@ -452,6 +447,18 @@ function isReferenceable(kind: WagerTransactionKind): boolean {
   return REFERENCEABLE_KINDS.has(kind);
 }
 
+function isIdempotencyConstraintViolation(
+  error: UniqueConstraintViolationException,
+): boolean {
+  const details = [error.message, error.sqlMessage, error.errmsg]
+    .filter((value): value is string => value !== undefined)
+    .join(' ');
+  return (
+    details.includes('uq_wager_provider_idempotency') ||
+    details.includes('uq_wager_provider_external')
+  );
+}
+
 @Injectable()
 export class WagerTransactionService {
   constructor(private readonly orm: MikroORM) {}
@@ -461,7 +468,10 @@ export class WagerTransactionService {
     try {
       return await this.process(normalized);
     } catch (error) {
-      if (error instanceof UniqueConstraintViolationException) {
+      if (
+        error instanceof UniqueConstraintViolationException &&
+        isIdempotencyConstraintViolation(error)
+      ) {
         return this.resolveExisting(normalized);
       }
       throw error;
@@ -568,6 +578,7 @@ export class WagerTransactionService {
         referenceAlreadyReversed = await this.hasProcessedReversal(
           em,
           reference,
+          transaction.kind,
         );
       }
 
@@ -695,6 +706,7 @@ export class WagerTransactionService {
         referenceAlreadyReversed = await this.hasProcessedReversal(
           em,
           reference,
+          transaction.kind,
         );
       }
 
@@ -744,7 +756,7 @@ export class WagerTransactionService {
     now: Date,
   ): Promise<void> {
     const queue: WagerTransaction[] = [processedReference];
-    const reversedReferenceIds = new Set<string>();
+    const reversedReferenceKinds = new Set<string>();
     const handledIds = new Set<string>();
 
     while (queue.length > 0) {
@@ -760,11 +772,6 @@ export class WagerTransactionService {
         { orderBy: { createdAt: 'ASC' } },
       )) as unknown as WagerTransactionRow[];
 
-      const alreadyReversedBase = await this.hasProcessedReversal(
-        em,
-        reference,
-      );
-
       for (const dependentRow of dependents) {
         if (handledIds.has(dependentRow.id)) {
           continue;
@@ -774,8 +781,10 @@ export class WagerTransactionService {
         const dependent = WagerTransaction.rehydrate(
           toWagerState(dependentRow),
         );
+        const reversalKey = `${reference.id}:${dependent.kind}`;
         const referenceAlreadyReversed =
-          alreadyReversedBase || reversedReferenceIds.has(reference.id);
+          (await this.hasProcessedReversal(em, reference, dependent.kind)) ||
+          reversedReferenceKinds.has(reversalKey);
 
         const result = applyWagerTransaction({
           wallet,
@@ -788,7 +797,7 @@ export class WagerTransactionService {
         this.syncWagerRow(dependentRow, dependent);
 
         if (result.kind === 'processed') {
-          reversedReferenceIds.add(reference.id);
+          reversedReferenceKinds.add(reversalKey);
           this.syncWalletRow(walletRow, wallet);
           if (result.entry) {
             em.create(WalletLedgerEntryEntity, toLedgerRowProps(result.entry));
@@ -804,12 +813,13 @@ export class WagerTransactionService {
   private async hasProcessedReversal(
     em: EntityManager,
     reference: WagerTransaction,
+    reversalKind: WagerTransactionKind,
   ): Promise<boolean> {
     const count = await em.count(WagerTransactionEntity, {
       providerId: reference.providerId,
       referenceTransactionId: reference.id,
       status: WagerTransactionStatus.Processed,
-      kind: { $in: REVERSAL_KINDS },
+      kind: reversalKind,
     });
     return count > 0;
   }

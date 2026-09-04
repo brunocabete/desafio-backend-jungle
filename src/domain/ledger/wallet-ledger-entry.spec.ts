@@ -47,6 +47,25 @@ describe('WalletLedgerEntry.create', () => {
     expect(entry.isBalanced()).toBe(true);
   });
 
+  it('does not expose a mutable createdAt reference', () => {
+    const entry = WalletLedgerEntry.create({
+      id: 'entry-date',
+      walletId: 'wallet-1',
+      transactionId: 'tx-date',
+      direction: LedgerDirection.Credit,
+      money: brl('30.00'),
+      balanceBefore: brl('70.00'),
+      balanceAfter: brl('100.00'),
+      createdAt: NOW,
+    });
+
+    const exposed = entry.createdAt;
+    exposed.setTime(0);
+
+    expect(entry.createdAt).toEqual(NOW);
+    expect(entry.createdAt).not.toBe(exposed);
+  });
+
   it('rejects an unbalanced entry at creation', () => {
     expect(() =>
       WalletLedgerEntry.create({
