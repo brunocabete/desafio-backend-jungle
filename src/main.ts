@@ -1,3 +1,4 @@
+import './common/config/load-env.js';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
 import { JsonLogger } from './common/logging/json.logger.js';
