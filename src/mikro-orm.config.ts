@@ -28,4 +28,8 @@ export default defineConfig({
     path: 'dist/migrations',
     pathTs: 'src/migrations',
   },
+  schemaGenerator: {
+    ignoreTriggers: true,
+    ignoreRoutines: true,
+  },
 });
