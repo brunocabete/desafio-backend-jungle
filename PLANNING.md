@@ -15,7 +15,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 | 4 — SQS consumer + transactionality | ✅ itens 1–5 (1: transactional outbox na mesma SQL transaction — §21; 2+3: consumer SQS com inbox persistente atômico + classificação/ack/DLQ — §22; 4: SIGTERM graceful — §23; 5: outbox publisher com claim atômico via compare-and-set, lease 30s, backoff exponencial 200ms→30s, seguro com publishers concorrentes — §24). |
 | 5 — Concurrency hardening | ✅ locking final = pessimista `FOR UPDATE` por wallet (único mecanismo; rede de segurança dos uniques no schema; broker = otimização, DB = fonte da verdade — §25 do decision log). Cenário obrigatório §8 + corridas verificadas por e2e real em `test/concurrency.e2e.test.ts`. |
 | 6 — Observability | ✅ logs JSON com campos §12 (JsonLogger aceita objeto; 1 log/liquidação; consumer usa messageId como correlação), métricas Prometheus text em `GET /metrics` (transações por status, duplicatas, retries, DLQ, lock conflicts, outbox lag, latência — ver §26); readiness via `/health/ready` (endpoint + e2e; sem serviço app no compose). |
-| 7 — Test matrix | 🚧 **passo 0 (schema): índice parcial único de single-reversal** (adiado das Fases 2–4) antes da matriz de reversões. Itens restantes do §13 listados na seção abaixo. |
+| 7 — Test matrix | ✅ passo 0 (schema): `uq_wager_single_reversal` criado (migration reversível + snapshot + enforcement no e2e de migrations — §27). Restantes do §13: multi-instância (≥3 processos), crash pós-commit/pré-ack, restart com consistência final (itens da matriz abaixo). |
 | 8 — Documentation & final pass | pending |
 
 ---

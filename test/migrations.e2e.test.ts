@@ -41,6 +41,7 @@ describe('migrations on a fresh Postgres database', () => {
     expect(executed.map((m) => m.name)).toEqual([
       expect.stringContaining('_init'),
       expect.stringContaining('_add_pending_reference_retry'),
+      expect.stringContaining('add_single_reversal_unique'),
     ]);
 
     const conn = orm.em.getConnection();
@@ -84,6 +85,69 @@ describe('migrations on a fresh Postgres database', () => {
          values (gen_random_uuid(), 'p-1', 'BRL', -1.00, 1, now(), now())`,
       ),
     ).rejects.toThrow('ck_wallet_balance_non_negative');
+
+    const reversalIndex = (
+      await conn.execute(
+        `select indexname from pg_indexes
+          where schemaname = 'public' and indexname = 'uq_wager_single_reversal'`,
+      )
+    ).map((row: { indexname: string }) => row.indexname);
+    expect(reversalIndex).toEqual(['uq_wager_single_reversal']);
+
+    const walletId = Bun.randomUUIDv7();
+    await conn.execute(
+      `insert into wallet (id, player_id, currency, balance_amount, version, created_at, updated_at)
+       values (?, 'p-reversal', 'BRL', 1000.00, 1, now(), now())`,
+      [walletId],
+    );
+    const insertWager = (
+      id: string,
+      externalTransactionId: string,
+      kind: string,
+      status: string,
+      referenceTransactionId: string | null,
+    ): Promise<unknown> =>
+      conn.execute(
+        `insert into wager_transaction (id, provider_id, external_transaction_id, idempotency_key, payload_hash, wallet_id, player_id, round_id, game_id, kind, status, money_amount, money_currency, reference_transaction_id, created_at)
+         values (?, 'prov', ?, ?, 'h', ?, 'p-reversal', 'round-1', 'game-1', ?, ?, 100.00, 'BRL', ?, now())`,
+        [
+          id,
+          externalTransactionId,
+          externalTransactionId,
+          walletId,
+          kind,
+          status,
+          referenceTransactionId,
+        ],
+      );
+
+    const betId = Bun.randomUUIDv7();
+    await insertWager(betId, 'bet-1', 'BET', 'PROCESSED', null);
+    await insertWager(
+      Bun.randomUUIDv7(),
+      'refund-1',
+      'REFUND',
+      'PROCESSED',
+      betId,
+    );
+    await insertWager(
+      Bun.randomUUIDv7(),
+      'rb-1',
+      'ROLLBACK',
+      'PROCESSED',
+      betId,
+    );
+    await insertWager(
+      Bun.randomUUIDv7(),
+      'refund-rej',
+      'REFUND',
+      'REJECTED',
+      betId,
+    );
+
+    await expect(
+      insertWager(Bun.randomUUIDv7(), 'refund-2', 'REFUND', 'PROCESSED', betId),
+    ).rejects.toThrow('uq_wager_single_reversal');
 
     await orm.migrator.down({ to: 0 });
 

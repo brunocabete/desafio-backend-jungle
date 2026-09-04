@@ -530,4 +530,19 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 **Testes**: unit de `JsonLogger` (fields), `prometheus.ts` (labels/escaping/histograma) e `MetricsService` (labeled counters/gauges/hist); consumer conta retry/DLQ; **e2e** `test/metrics.e2e.test.ts`: após BET+replay+rejeição+reconciliação, `GET /metrics` expõe `wager_transactions_total{status=...}`, `wager_duplicates_total`, histograma com `_count>0` e reconciliação.
 
 ### Pendências
-- Índice parcial único de single-reversal: **agendado para o início da Fase 7** (schema + e2e de reversões), conforme acordado.
+- ~~Índice parcial único de single-reversal~~ → concluído na Fase 7, passo 0 (ver §27).
+
+---
+
+## 27. Fase 7, passo 0 — Índice parcial único de single-reversal no schema (SPECS §7 regra 4, §5.9)
+
+- **Invariante**: uma referência não pode ser revertida duas vezes **pelo mesmo tipo de operação** (§7.4) — e só reversão `PROCESSED` move saldo/ledger. Até aqui o guard vivia apenas no app (`hasProcessedReversal`, por `(reference_transaction_id, kind)`, sob o lock `FOR UPDATE` da wallet); agora o **schema** também garante (§5.9) como rede de segurança contra bugs/regressões e corridas fora do caminho de lock.
+- **Índice**: `create unique index "uq_wager_single_reversal" on "wager_transaction" ("reference_transaction_id", "kind") where "status" = 'PROCESSED' and "kind" in ('REFUND', 'ROLLBACK')`. Semântica **alinhada** ao guard do app e aos testes já existentes:
+  - chave `(reference, kind)`: um BET pode ter 1 `REFUND` e 1 `ROLLBACK` `PROCESSED` (kinds distintos), mas não 2 `REFUND` nem 2 `ROLLBACK` do mesmo tipo;
+  - predicado `status = 'PROCESSED'`: `REJECTED`/`PENDING_REFERENCE` não revertem nada (sem efeito de saldo) → não contam para a unicidade;
+  - `reference_transaction_id` é sempre resolvido quando a reversão fica `PROCESSED` (não há REFUND/ROLLBACK processado sem referência), então o predicado cobre exatamente os casos com efeito.
+- **Expresso no metadata da entidade** (`WagerTransactionEntity.uniques[]` com `where` em forma de filter object) — MikroORM v7.1 gera índice parcial como `CREATE UNIQUE INDEX` (constraint não carrega predicado) e compara predicados de forma estrutural no diff. Migration `..._add_single_reversal_unique` gerada por `migration:create` e **limpa manualmente**: o auto-diff queria dropar/recriar o trigger de imutabilidade do ledger (que vive só na migration/DB, não no metadata) — removido, como já é prática do repo. `down()` = `drop index`. Snapshot `.snapshot-myapp.json` regenerado (passa a metadata-based; estável para os próximos `migration:create`).
+- **Verificação**: `test/migrations.e2e.test.ts` agora também (a) confere o índice em `pg_indexes`; (b) BET + `REFUND` `PROCESSED` ok; (c) `ROLLBACK` `PROCESSED` do mesmo BET (kind diferente) ok; (d) `REFUND` `REJECTED` do mesmo BET (fora do predicado) ok; (e) 2º `REFUND` `PROCESSED` do mesmo BET → viola `uq_wager_single_reversal`; (f) `down({to: 0})` continua revertendo tudo. Enforcement também validado à mão no Postgres local. Combinado com os e2e de wagering/concurrency (dupla reversão concorrente e `REFUND`+`ROLLBACK` do mesmo BET), o schema é agora a última linha de defesa das regras 3–4 do §7.
+
+### Pendências (Fase 7, demais passos do §13)
+- Multi-instância: **≥ 3 processos/instâncias simultâneos**; worker morto **depois do commit e antes do ack**; restart do serviço com **consistência final** (`balance == reconstrução do ledger`); retry + DLQ real; crash recovery. Opcional: `bun run test:load`.

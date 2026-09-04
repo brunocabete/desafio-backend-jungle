@@ -13,6 +13,14 @@ export const WagerTransactionEntity = defineEntity({
       name: 'uq_wager_provider_idempotency',
       properties: ['providerId', 'idempotencyKey'],
     },
+    {
+      name: 'uq_wager_single_reversal',
+      properties: ['referenceTransactionId', 'kind'],
+      where: {
+        status: 'PROCESSED',
+        kind: { $in: ['REFUND', 'ROLLBACK'] },
+      },
+    },
   ],
   properties: {
     id: p.uuid().primary(),
