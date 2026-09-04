@@ -544,8 +544,8 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 - **Expresso no metadata da entidade** (`WagerTransactionEntity.uniques[]` com `where` em forma de filter object) — MikroORM v7.1 gera índice parcial como `CREATE UNIQUE INDEX` (constraint não carrega predicado) e compara predicados de forma estrutural no diff. Migration `..._add_single_reversal_unique` gerada por `migration:create` e **limpa manualmente**: o auto-diff queria dropar/recriar o trigger de imutabilidade do ledger (que vive só na migration/DB, não no metadata) — removido, como já é prática do repo. `down()` = `drop index`. Snapshot `.snapshot-myapp.json` regenerado (passa a metadata-based; estável para os próximos `migration:create`).
 - **Verificação**: `test/migrations.e2e.test.ts` agora também (a) confere o índice em `pg_indexes`; (b) BET + `REFUND` `PROCESSED` ok; (c) `ROLLBACK` `PROCESSED` do mesmo BET (kind diferente) ok; (d) `REFUND` `REJECTED` do mesmo BET (fora do predicado) ok; (e) 2º `REFUND` `PROCESSED` do mesmo BET → viola `uq_wager_single_reversal`; (f) `down({to: 0})` continua revertendo tudo. Enforcement também validado à mão no Postgres local. Combinado com os e2e de wagering/concurrency (dupla reversão concorrente e `REFUND`+`ROLLBACK` do mesmo BET), o schema é agora a última linha de defesa das regras 3–4 do §7.
 
-### Pendências (Fase 7, demais passos do §13)
-- Crash pós-commit/pré-ack e restart com consistência final — próximos passos; lista consolidada ao fim do §28.
+### Pendências (Fase 7)
+- Concluídas em §27–§29; resta apenas o diferencial opcional `bun run test:load`.
 
 ---
 
@@ -561,5 +561,19 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 - Nota de infraestrutura do runner: o `bun test` executa os arquivos de teste **sequencialmente no mesmo processo** (verificado empiricamente), então env/filas por arquivo são isolados; os workers filhos herdam o env do pai e apontam para o DB dedicado do arquivo.
 - **Verificação**: `bun test ./test/multi-instance.e2e.test.ts` → 3 testes verdes (sobreposição confirmada); suíte completa unit 231 + e2e 68 verdes, lint e `tsc --noEmit` limpos.
 
-### Pendências (Fase 7, demais passos do §13)
-- Crash pós-commit/pré-ack e restart com consistência final ainda pendentes (workers reais + kill). Opcional: `bun run test:load`.
+---
+
+## 29. Fase 7 — Crash pós-commit/pré-ack e restart com consistência final (SPECS §13 itens 3.5 e 3.8)
+
+Fechamento da matriz de concorrência com **processos reais** + Ministack + Postgres, em `test/crash-recovery.e2e.test.ts` (filas FIFO **dedicadas** criadas/removidas pelo teste — não toca as filas default do compose; DB dedicado). Worker de apoio: `test/processes/sqs-consumer-worker.ts`.
+
+- **Harness ("instância" = processo real)**: cada worker sobe seu `MikroORM` + o consumer real de produção (`WagerSqsConsumerService` + `AwsWagerSqsGateway` = mesmo use case + inbox + ack). Dois modos:
+  - `crash`: recebe **1** mensagem, liquida via use case (commit: wallet+ledger+wager+inbox), grava um checkpoint com o `receiptHandle` e **pendura** — estado idêntico ao de um processo que commitou e morreu **antes do ack**. O pai faz `SIGKILL` **fora de qualquer long-poll** (o processo está pendurado em `setInterval`), lê o checkpoint e força a redelivery.
+  - `poll` (padrão): consome até a fila esvaziar (um poll retorna 0) e **sai limpo** — usado como instância reiniciada.
+- **§13.5 — worker morto depois do commit e antes do ack**: worker `crash` commitou a BET; `SIGKILL` antes do ack; o broker **redelivers** a mesma mensagem (mesmo `messageId`/payload, entrega at-least-once); uma instância reiniciada processa a redelivery → **replay**, sem duplicar efeito. Asserts: 1 linha `PROCESSED`, 1 débito, 1 inbox, saldo `75.00`, ledger `75.00`, fila vazia no fim.
+- **§13.8 — reinício do serviço com consistência final**: instância A drena o lote 1 e **para** (serviço fora do ar); mais wagers chegam nesse intervalo; instância B (reiniciada) drena o lote 2. Asserts: 6 linhas `PROCESSED`, 6 débitos (nenhum duplicado do lote 1), 6 inbox, saldo `850.00`, `version=7` e `ledger == 850.00` (invariante final `balance == reconstrução do ledger`).
+- **Decisão de desenho (robustez do teste)**: a primeira versão matava um worker `poll` com `SIGKILL`/`SIGTERM` enquanto ele podia estar **bloqueado num long-poll (10s) do FIFO**; o emulador Ministack passava a **não entregar mensagens seguintes por ~50s** (entrega "travada"), derrubando os testes com timeout e, ao limpar a fila no `afterAll`, os workers órfãos passavam a receber `QueueDoesNotExist`. Por isso **nenhum worker é morto durante um long-poll**: os `poll` param sozinhos quando a fila esvazia e o único `SIGKILL` é no worker `crash` (pendurado, fora de polling). A redelivery do §13.5 é reproduzida reenviando a mesma mensagem (padrão já usado no e2e do consumer) — determinístico e sem depender do *visibility timeout* de 60s.
+- **Verificação**: `bun test ./test/crash-recovery.e2e.test.ts` verde em 3 execuções consecutivas (~37s); suíte completa unit 231 + e2e 70 verdes, lint e `tsc --noEmit` limpos.
+
+### Pendências (Fase 7)
+- Apenas o diferencial opcional `bun run test:load` (metodologia honesta + p50/p95/p99). Matriz §13 completa.
