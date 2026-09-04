@@ -10,6 +10,7 @@ import { HealthModule } from './health/health.module.js';
 import { WalletModule } from './wallets/wallet.module.js';
 import { WageringModule } from './wagering/wagering.module.js';
 import { SqsModule } from './sqs/wager-sqs.module.js';
+import { OutboxModule } from './outbox/outbox.module.js';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { SqsModule } from './sqs/wager-sqs.module.js';
     WalletModule,
     WageringModule,
     SqsModule,
+    OutboxModule,
   ],
   providers: [
     {

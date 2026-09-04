@@ -7,6 +7,7 @@ export interface SqsEnv {
   endpoint?: string;
   queue?: string;
   dlqQueue?: string;
+  eventsQueue?: string;
 }
 
 export function sqsEnv(env: NodeJS.ProcessEnv = process.env): SqsEnv {
@@ -17,6 +18,7 @@ export function sqsEnv(env: NodeJS.ProcessEnv = process.env): SqsEnv {
     endpoint: env.AWS_ENDPOINT_URL || undefined,
     queue: env.AWS_SQS_QUEUE,
     dlqQueue: env.AWS_SQS_DLQ_QUEUE,
+    eventsQueue: env.AWS_SQS_EVENTS_QUEUE,
   };
 }
 

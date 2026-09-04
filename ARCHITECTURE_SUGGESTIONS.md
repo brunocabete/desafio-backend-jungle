@@ -448,7 +448,7 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 
 ### Pendências
 - ~~Item 4 (SIGTERM graceful)~~ → concluído (ver §23).
-- Item 5 (publisher da outbox com claim atômico; múltiplos publishers).
+- ~~Item 5 (publisher da outbox com claim atômico; múltiplos publishers)~~ → concluído (ver §24).
 - Índice parcial único de single-reversal no schema (adiado de fases anteriores).
 
 ---
@@ -464,5 +464,23 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 - Testes unit (fake gateway com receive controlado por promise): shutdown **aguarda** o lote em voo (não resolve antes de liberar a mensagem; ao liberar, ack acontece e o close resolve), não dispara novo receive depois do stop, e consumidor desabilitado não agenda polling.
 
 ### Pendências
-- Item 5 (publisher da outbox com claim atômico; múltiplos publishers).
+- ~~Item 5 (publisher da outbox com claim atômico; múltiplos publishers)~~ → concluído (ver §24).
 - Índice parcial único de single-reversal no schema (adiado de fases anteriores).
+
+---
+
+## 24. Fase 4, item 5 — Outbox publisher com claim atômico (§11)
+
+- **Destino dos eventos**: fila FIFO `wager-events.fifo` (criada em `docker/ministack/init/01-create-queues.sh`; **requer `docker compose up -d --force-recreate ministack`** — já feito; re-create limpa as filas antigas). `ContentBasedDeduplication=true`: publicações duplicadas idênticas dentro da janela são colapsadas pelo próprio SQS — idempotência extra além do inbox do consumidor. Envelope = `payload` da outbox (o `toJSON()` do `IntegrationEvent`, com `eventId`/`version`). `MessageGroupId = aggregateId`.
+- **`SqsOutboxPublisherGateway`** (`src/outbox/outbox-publisher.gateway.ts`, porta `OutboxPublisherGateway` + token `OUTBOX_PUBLISHER`) envia para `AWS_SQS_EVENTS_QUEUE` (fallback `wager-events.fifo`).
+- **`OutboxPublisherService`** (`src/outbox/outbox-publisher.service.ts`, `OutboxModule` no `AppModule`):
+  - **claim = compare-and-set atômico em SQL**: `update outbox_message set attempts = attempts + 1, next_attempt_at = now + LEASE where id = ? and published_at is null and (next_attempt_at is null or next_attempt_at <= now) returning attempts`. Publishers concorrentes na mesma linha: exatamente um ganha (0 rows afetadas = skip) — **sem dupla publicação, sem lost update**; o lease (30s, `OUTBOX_CLAIM_LEASE_MS`) cobre o intervalo em voo. (Tentei `FOR UPDATE` por linha; sob corrida real 2 workers chegavam a `attempts=2`, então o CAS foi a escolha correta — ver e2e concorrente.)
+  - publicação acontece **fora** de transação (sem segurar lock/DB durante rede); sucesso → **finalize com guard**: `update ... set published_at = now, next_attempt_at = null where id = ? and published_at is null and attempts = ?` (publisher "velho" que perdeu a corrida nunca sobrescreve);
+  - falha → **backoff exponencial** com as constantes do domínio (`outboxRetryDelayMs`: 200ms·2^(n-1), teto 30s) via `scheduleRetry` guardado por `attempts`;
+  - **crash pós-claim/pré-publicação**: lease expira e outra instância republica (duplicata segura — consumidor idempotente); nunca perde evento (§11 cenário 1–5);
+  - sem limite de tentativas: fila de eventos permanentemente indisponível mantém a linha pendente (outbox lag) — "não perder" prevalece; nenhuma linha é apagada.
+  - scheduler ligado por `WAGER_OUTBOX_PUBLISHER_ENABLED=true` + `WAGER_OUTBOX_POLL_MS` (default 1s), mesma convenção do consumer (off por padrão p/ e2e).
+- Testes: unit de `outboxRetryDelayMs` + constantes; **e2e real** `test/outbox-publisher.e2e.test.ts` (Postgres dedicado + Ministack `wager-events.fifo`): publica todo pendente exatamente uma vez e re-run é no-op; falha (gateway que lança) → rescheduled (attempts 1, sem publicação) e recupera no run seguinte com `attempts=2`; **dois publishers concorrentes** (`Promise.all`) → soma publicados == pendentes, sem duplicata na fila e cada linha com `attempts=1` (prova do CAS).
+
+### Pendências
+- Índice parcial único de single-reversal no schema (adiado de fases anteriores — decisão registrada nas Fases 2–3).
