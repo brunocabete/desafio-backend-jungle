@@ -16,7 +16,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 | 5 — Concurrency hardening | ✅ locking final = pessimista `FOR UPDATE` por wallet (único mecanismo; rede de segurança dos uniques no schema; broker = otimização, DB = fonte da verdade — §25 do decision log). Cenário obrigatório §8 + corridas verificadas por e2e real em `test/concurrency.e2e.test.ts`. |
 | 6 — Observability | ✅ logs JSON com campos §12 (JsonLogger aceita objeto; 1 log/liquidação; consumer usa messageId como correlação), métricas Prometheus text em `GET /metrics` (transações por status, duplicatas, retries, DLQ, lock conflicts, outbox lag, latência — ver §26); readiness via `/health/ready` (endpoint + e2e; sem serviço app no compose). |
 | 7 — Test matrix | ✅ completo. Passo 0 (schema `uq_wager_single_reversal` — §27); multi-instância ≥3 processos (§28); crash pós-commit/pré-ack + restart com consistência final (§29); **load test `bun run test:load`** com metodologia + relatório (diferencial §14 — §30). |
-| 8 — Documentation & final pass | pending |
+| 8 — Documentation & final pass | ✅ item 1 (`README.md` reescrito com setup/commands reais) e item 3 (lint/format/test/test:e2e verdes — unit 231, e2e 70; varredura §14 sem falha eliminatória). Item 2: `ARCHITECTURE.md` com desalinhamentos corrigidos (locking final pessimista, idempotência, schema/money); **consolidação completa a cargo do autor** (decisão explícita) usando `ARCHITECTURE_SUGGESTIONS.md` §1–§30. |
 
 ---
 

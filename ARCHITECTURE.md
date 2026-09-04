@@ -10,28 +10,31 @@ O método de arredondamento utilizado pela biblioteca Decimal foi definido expli
 
 ## Wallet
 
-Um dos pontos principais a serem decididos no objeto de carteira é como é feito o locking do registro no caso de acessos simultaneos/race condition.
-Neste exercício, como a carteira é invariavelmente de um jogador, escolher o locking otimista faz sentido já que as operações de leitura e escrita serão limitadas a apenas uma pessoa interagindo com o jogo, havendo tempo o suficiente entre ações para que os problemas citados sejam raros, e com as devidas mensagens de erro informando tanto o usuario como os desenvolvedores da aplicação que consome o backend, não há grande confusão quanto ao uso da plataforma, mantendo assim uma maior simplicidade da implementação e menos pontos de falha.
-Pela minha experiencia com jogos online, esse tipo de falha de comunicação normalmente é percebida como um problema na própria internet, portanto o jogador acaba sabendo o que precisa fazer para evitar que isso ocorra novamente (mas com certeza pediria opinião do time de UI/UX e produto para mais informacoes)
+Um dos pontos principais a serem decididos no objeto de carteira é como é feito o locking do registro no caso de acessos simultâneos/race condition.
+
+Na fase inicial cogitei o **locking otimista** via `version` (a carteira é de um jogador, então a contenção tende a ser rara). Na **fase final de concorrência (§5 do desafio) essa escolha foi revisada e fechada como locking pessimista**: toda liquidação não é um update condicionado único — ela envolve wallet + lançamento de ledger + estado da transação + inbox/outbox **na mesma transação SQL**. Lock otimista exigiria CAS no saldo/`version` + retry de toda a transação multi-tabela, com re-execução de efeitos; o `FOR UPDATE` por linha da wallet serializa sem lost update e sem loop de retry. A granularidade é a **linha da wallet** (sem lock global), e `wallet.version` ficou como coluna *plain* (auditoria), sem `@Version` do ORM. Detalhes e justificativa: `ARCHITECTURE_SUGGESTIONS.md` §25.
+
+A reconciliação lê com `FOR SHARE`; como todo escritor trava a mesma linha com `FOR UPDATE`, saldo e ledger não mudam durante a reconstrução. Os uniques do schema são a rede de segurança para corridas que não passam pelo lock (ex.: criação de wallet duplicada).
 
 
 ## Wager transaction
 
 Aqui temos uma state machine com regras bem definidas e que devem ser checadas em todos os processos de transição de estado. Para isso temos o mapeamento em ALLOWED_TRANSITIONS que gera erros de negócio sempre que uma transição não permitida tenta ocorrer.
 
-Para transações que se derivam de outras como rollback, o ID da transação originária é OBRIGATÓRIO e mantém a consistencia dos dados.
+Para transações que se derivam de outras (`REFUND`/`ROLLBACK`), o **`referenceExternalTransactionId`** do provedor é obrigatório e mantém a consistência dos dados: a referência é resolvida por `(providerId, referenceExternalTransactionId)` e precisa pertencer ao mesmo provider/player/wallet/rodada/moeda. `OPENING` é interno (criação de wallet) e não pode ser submetido pela API/fila.
 
 Estados imutáveis também são definidos pois não há nenhuma operação que pode ser realizada na transação após ela ser definida como processada, rejeitada ou com falha.
 
 ## Idempotencia e Hashing
 
-Para a criação da chave de idempotencia, são retirados apenas os valores presentes nas regras de negócio daquele objeto para a geração da hash sem utilizar valores temporais.
-Caso a hash ainda não exista no banco, a transação pode ser processada. Caso já exista
+Para a criação da chave de idempotencia, são retirados apenas os valores presentes nas regras de negócio daquele objeto para a geração da hash sem utilizar valores temporais (JSON canônico + SHA-256 dos campos de negócio — o header de transporte não entra). O `payloadHash` é persistido junto da transação:
+
+- chave nova → processa;
+- chave existente com **mesmo** hash → replay, devolvendo o resultado original (incluindo o saldo observado);
+- chave existente com hash **diferente** → conflito (`IDEMPOTENCY_CONFLICT`), nunca replay.
+
+A unicidade é garantida no banco por `(provider_id, idempotency_key)`; corrida entre instâncias resolve o unique em replay/conflict via reload.
 
 
 ## Schema do banco
-    numeric no postgresql é preciso. salvar como string pode causar problemas de ordenação.
-
-## Disclaimer sobre o uso de IA:
-Este arquivo foi redigido apenas por mãos humanas, de forma a retratar as decisões tomadas pelo autor.
-Agentes de IA foram utilizados ao longo do projeto como auxílio, porém seu uso foi feito de forma consciente e procedural, de forma que a cada etapa o autor controlava as decisões estruturais do projeto e analisava o código escrito, fazendo todas e quaisquer alterações necessárias.
+    Dinheiro é persistido em colunas exatas `numeric(20,2)` + `currency varchar(3)`; o driver do Postgres devolve `numeric` como string e a aplicação reconstrói o `Money` via `Money.from` (sem `number` intermediário). Ordenação e aritmética de checagem (saldo/ledger) acontecem no Postgres, com precisão exata. O ledger é imutável por trigger (`BEFORE UPDATE OR DELETE`) e a unicidade de reversão (`REFUND`/`ROLLBACK` `PROCESSED`) é garantida por índice parcial único `uq_wager_single_reversal`.
