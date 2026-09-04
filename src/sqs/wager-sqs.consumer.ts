@@ -22,6 +22,8 @@ import {
 } from './wager-sqs.gateway.js';
 
 export const SQS_MAX_RECEIVE_COUNT = 5;
+export const SQS_DEFAULT_POLL_MS = 1_000;
+export const SQS_DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 export type ConsumeAction = 'ack' | 'dlq' | 'retry';
 
@@ -50,6 +52,8 @@ export class WagerSqsConsumerService
   private readonly logger = new Logger(WagerSqsConsumerService.name);
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
+  private stopping = false;
+  private tickPromise: Promise<void> | undefined;
 
   constructor(
     private readonly wagerService: WagerTransactionService,
@@ -60,20 +64,35 @@ export class WagerSqsConsumerService
     if (process.env.WAGER_SQS_CONSUMER_ENABLED !== 'true') {
       return;
     }
-    const pollMs = Number(process.env.WAGER_SQS_POLL_MS);
-    const interval = Number.isFinite(pollMs) ? pollMs : 1_000;
+    const interval = this.pollIntervalMs();
     if (interval <= 0) {
       return;
     }
     this.timer = setInterval(() => {
-      void this.tick();
+      this.onTimer();
     }, interval);
   }
 
-  onApplicationShutdown(): void {
+  async onApplicationShutdown(): Promise<void> {
+    await this.close();
+  }
+
+  async close(): Promise<void> {
+    this.stopping = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
+    }
+    const inFlight = this.tickPromise;
+    if (!inFlight) {
+      return;
+    }
+    const graceMs = this.shutdownTimeoutMs();
+    const drained = await withTimeout(inFlight, graceMs);
+    if (!drained) {
+      this.logger.warn(
+        `sqs consumer shutdown exceeded the ${graceMs}ms grace period; unacked in-flight messages will be redelivered after the visibility timeout`,
+      );
     }
   }
 
@@ -113,11 +132,32 @@ export class WagerSqsConsumerService
     }
   }
 
-  private async tick(): Promise<void> {
-    if (this.running) {
+  private pollIntervalMs(): number {
+    const value = Number(process.env.WAGER_SQS_POLL_MS);
+    return Number.isFinite(value) ? value : SQS_DEFAULT_POLL_MS;
+  }
+
+  private shutdownTimeoutMs(): number {
+    const value = Number(process.env.WAGER_SQS_SHUTDOWN_TIMEOUT_MS);
+    return Number.isFinite(value) && value > 0
+      ? value
+      : SQS_DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  }
+
+  private onTimer(): void {
+    if (this.running || this.stopping) {
       return;
     }
     this.running = true;
+    const cycle = this.runCycle();
+    this.tickPromise = cycle;
+    void cycle.finally(() => {
+      this.running = false;
+      this.tickPromise = undefined;
+    });
+  }
+
+  private async runCycle(): Promise<void> {
     try {
       const handled = await this.pollOnce();
       if (handled > 0) {
@@ -127,8 +167,6 @@ export class WagerSqsConsumerService
       this.logger.error(
         `sqs consumer failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-    } finally {
-      this.running = false;
     }
   }
 
@@ -153,5 +191,24 @@ export class WagerSqsConsumerService
     this.logger.warn(
       `transient failure for SQS message '${message.systemMessageId}' (receive ${message.receiveCount}): ${reason} — waiting for redelivery`,
     );
+  }
+}
+
+async function withTimeout(
+  promise: Promise<void>,
+  ms: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }

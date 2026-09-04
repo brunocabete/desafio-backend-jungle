@@ -208,3 +208,121 @@ describe('consumeActionForFailure', () => {
     );
   });
 });
+
+class ControlledGateway implements WagerSqsGateway {
+  receiveCalls = 0;
+  acked: string[] = [];
+  private pendingReleases: Array<(messages: SqsReceivedMessage[]) => void> = [];
+  private receiveStartedResolve: (() => void) | undefined;
+
+  receiveStarted(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.receiveStartedResolve = resolve;
+    });
+  }
+
+  async receive(): Promise<SqsReceivedMessage[]> {
+    this.receiveCalls += 1;
+    this.receiveStartedResolve?.();
+    this.receiveStartedResolve = undefined;
+    return new Promise<SqsReceivedMessage[]>((resolve) => {
+      this.pendingReleases.push(resolve);
+    });
+  }
+
+  release(messages: SqsReceivedMessage[]): void {
+    const release = this.pendingReleases.shift();
+    release?.(messages);
+  }
+
+  async ack(receiptHandle: string): Promise<void> {
+    this.acked.push(receiptHandle);
+  }
+
+  async moveToDlq(): Promise<void> {
+    throw new Error('not expected');
+  }
+}
+
+describe('WagerSqsConsumerService graceful shutdown', () => {
+  let previousEnabled: string | undefined;
+  let previousPoll: string | undefined;
+  let previousTimeout: string | undefined;
+
+  beforeEach(() => {
+    previousEnabled = process.env.WAGER_SQS_CONSUMER_ENABLED;
+    previousPoll = process.env.WAGER_SQS_POLL_MS;
+    previousTimeout = process.env.WAGER_SQS_SHUTDOWN_TIMEOUT_MS;
+  });
+
+  afterEach(() => {
+    if (previousEnabled === undefined) {
+      delete process.env.WAGER_SQS_CONSUMER_ENABLED;
+    } else {
+      process.env.WAGER_SQS_CONSUMER_ENABLED = previousEnabled;
+    }
+    if (previousPoll === undefined) {
+      delete process.env.WAGER_SQS_POLL_MS;
+    } else {
+      process.env.WAGER_SQS_POLL_MS = previousPoll;
+    }
+    if (previousTimeout === undefined) {
+      delete process.env.WAGER_SQS_SHUTDOWN_TIMEOUT_MS;
+    } else {
+      process.env.WAGER_SQS_SHUTDOWN_TIMEOUT_MS = previousTimeout;
+    }
+  });
+
+  function build(): {
+    consumer: WagerSqsConsumerService;
+    gateway: ControlledGateway;
+  } {
+    const gateway = new ControlledGateway();
+    const fakeService = {
+      submit: async () => processedView(),
+    } as unknown as WagerTransactionService;
+    return {
+      consumer: new WagerSqsConsumerService(fakeService, gateway),
+      gateway,
+    };
+  }
+
+  it('finishes the in-flight message and stops polling on shutdown', async () => {
+    process.env.WAGER_SQS_CONSUMER_ENABLED = 'true';
+    process.env.WAGER_SQS_POLL_MS = '5';
+    process.env.WAGER_SQS_SHUTDOWN_TIMEOUT_MS = '2000';
+    const { consumer, gateway } = build();
+    const started = gateway.receiveStarted();
+    consumer.onApplicationBootstrap();
+
+    await started;
+    let closed = false;
+    const closing = consumer.onApplicationShutdown().then(() => {
+      closed = true;
+    });
+    await sleep(20);
+    expect(closed).toBe(false);
+
+    gateway.release([received()]);
+    await closing;
+    expect(closed).toBe(true);
+    expect(gateway.acked).toEqual(['receipt-1']);
+
+    await sleep(20);
+    expect(gateway.receiveCalls).toBe(1);
+  });
+
+  it('does not start polling when the consumer is disabled', async () => {
+    process.env.WAGER_SQS_CONSUMER_ENABLED = 'false';
+    process.env.WAGER_SQS_POLL_MS = '5';
+    const { consumer, gateway } = build();
+    consumer.onApplicationBootstrap();
+    await sleep(20);
+    expect(gateway.receiveCalls).toBe(0);
+    await consumer.onApplicationShutdown();
+  });
+});
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

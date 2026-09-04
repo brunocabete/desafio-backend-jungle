@@ -439,7 +439,7 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
   - **permanente** (`InvalidSqsMessageError`/`InvalidWagerPayloadError`/`WagerIdempotencyConflictError`) → DLQ imediato;
   - **transitório** (infra, `WagerWalletNotFoundError`) → sem ack; redelivery após visibility timeout funciona como backoff; ao atingir `SQS_MAX_RECEIVE_COUNT = 5` (`ApproximateReceiveCount`) → DLQ. A redrive policy da fila (maxReceiveCount 5, criada no compose) é a rede de segurança adicional;
   - **resultado de negócio terminal** (`REJECTED` persistido, `PENDING_REFERENCE`) **não é erro** — `submit` retorna view → ack.
-- `SqsModule` no `AppModule`; consumidor **desligado por padrão**, ativa com `WAGER_SQS_CONSUMER_ENABLED=true` (+ `WAGER_SQS_POLL_MS`). Motivo: e2e que sobem o `AppModule` em paralelo não devem disputar mensagens da fila real; `.env` (dev) e `.env.example` documentam o flag. **Item 4 (SIGTERM graceful) fica para o próximo item** — hoje `onApplicationShutdown` apenas para o timer; a mensagem em voo volta por visibility timeout sem duplicar efeito (idempotência + inbox).
+- `SqsModule` no `AppModule`; consumidor **desligado por padrão**, ativa com `WAGER_SQS_CONSUMER_ENABLED=true` (+ `WAGER_SQS_POLL_MS`). Motivo: e2e que sobem o `AppModule` em paralelo não devem disputar mensagens da fila real; `.env` (dev) e `.env.example` documentam o flag. Shutdown graceful (SIGTERM) concluído no item 4 (ver §23).
 - Decisão de config: gateway reusa `src/common/config/sqs.ts` (extraído do health — `sqsEnv`/`createSqsClient`, agora com `dlqQueue` de `AWS_SQS_DLQ_QUEUE`, fallback `wager-transactions-dlq.fifo`); health re-exporta `sqsEnv` (spec existente intacto).
 
 ### Testes
@@ -447,6 +447,22 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 - **E2E real (Ministack + Postgres)** `test/sqs-consumer.e2e.test.ts`: env AWS apontando para `localhost:4566`, filas drenadas no início/fim (isolação); BET pela fila liquida + ack + linha de inbox; **redelivery do mesmo `messageId` não duplica débito** (inbox); REFUND fora de ordem vira `PENDING_REFERENCE` (ack) e resolve quando o BET chega pela fila; payload inválido vai para a DLQ (e não registra inbox).
 
 ### Pendências
-- Item 4 (SIGTERM graceful: drenar em voo ou devolver visibilidade — hoje coberto por visibility timeout + idempotência, mas sem shutdown coordenado do loop).
+- ~~Item 4 (SIGTERM graceful)~~ → concluído (ver §23).
+- Item 5 (publisher da outbox com claim atômico; múltiplos publishers).
+- Índice parcial único de single-reversal no schema (adiado de fases anteriores).
+
+---
+
+## 23. Fase 4, item 4 — Shutdown graceful (SIGTERM) do consumidor SQS (§10)
+
+- **`main.ts` ganhou `app.enableShutdownHooks()`** — sem isso o Nest não registra listeners de `SIGTERM`/`SIGINT` e `onApplicationShutdown` nunca roda (o processo morria sem drenar). Agora SIGTERM dispara `app.close()` → hooks de shutdown dos módulos (consumer, scheduler de `PENDING_REFERENCE`, MikroORM).
+- **Consumidor com ciclo rastreado**: em vez de `setInterval` solto, cada ciclo guarda `tickPromise` (com guard anti-sobreposição `running` e flag `stopping`). `onApplicationShutdown()` chama `close()`:
+  1. marca `stopping` e faz `clearInterval` (não agenda mais receives);
+  2. se há ciclo em voo, **aguarda a conclusão do lote atual** (cada mensagem é ack/DLQ antes do ciclo acabar) com grace period configurável `WAGER_SQS_SHUTDOWN_TIMEOUT_MS` (default 30s);
+  3. se o grace expirar, loga e retorna — o processo sai e as mensagens ainda em voo **voltam via visibility timeout** (60s) sem duplicar efeito (idempotência de negócio + inbox persistente garantem a redelivery segura).
+- Isso implementa literalmente o "concluir mensagens em andamento **ou** devolver a visibilidade" do §10; o batching FIFO mantém a ordem dentro do grupo até o último instante.
+- Testes unit (fake gateway com receive controlado por promise): shutdown **aguarda** o lote em voo (não resolve antes de liberar a mensagem; ao liberar, ack acontece e o close resolve), não dispara novo receive depois do stop, e consumidor desabilitado não agenda polling.
+
+### Pendências
 - Item 5 (publisher da outbox com claim atômico; múltiplos publishers).
 - Índice parcial único de single-reversal no schema (adiado de fases anteriores).
