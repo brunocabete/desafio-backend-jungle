@@ -315,3 +315,25 @@ Sincronia entre mapa, tipo e descrições é garantida por teste (`failure-code.
 - **Scheduler**: `PendingReferenceScheduler` (polling simples, sem cron — `setInterval` em `OnApplicationBootstrap`, intervalo padrão 2s, `WAGER_PENDING_WORKER_POLL_MS=0` desliga; usado pelos e2e), com guarda anti-sobreposição de ticks e shutdown limpo.
 - **Decisão de teste (harness)**: o e2e do worker **não sobe o app Nest** — instancia `MikroORM` (dbName explícito via `ormOptionsFor`) + `WalletService`/`WagerTransactionService` direto. Motivo: subir `AppModule` por arquivo depende de `process.env.POSTGRES_DB` + import dinâmico do config, o que fica frágil quando o `bun test` roda arquivos em paralelo (cache de módulo + env global). Nomes de DB de teste ganharam sufixo aleatório (`test-names.ts`).
 - Testes: unit (delay/agendamento) + e2e real: rejeição por TTL (`UNRESOLVED_REFERENCE`, sem mover saldo/ledger), backoff/limite de tentativas (linha rejeitada após N), "não due → skip" e teto do delay.
+
+---
+
+## 17. Fase 3, item 4 — Endpoints de leitura
+
+Consultas do §9 implementadas. **Releitura: endpoints são read-only; nenhuma escrita nova no schema.**
+
+- **`GET /wallets/:walletId`** reusa o `WalletView` do `POST /wallets` (`id`, `playerId`, `balance`, `version`). Saldo devolvido é o **armazenado** (materializado) — a checagem contra o ledger é papel da reconciliação (item 5), não do GET.
+- **`GET /wallets/:walletId/ledger?cursor=&limit=`** (`WalletService.ledger`):
+  - ordem **crescente** por `(created_at, id)` — ordem natural de auditoria (reconstruir saldo somando do início); ledger é imutável, então a ordem é estável sob escritas concorrentes;
+  - paginação **keyset** (sem OFFSET): condição `created_at > t OR (created_at = t AND id > lastId)`; query de `limit + 1` linhas para derivar `hasMore`/`nextCursor` sem página vazia no fim;
+  - **cursor opaco**: `base64url(JSON {v:1, t: createdAt-ISO, i: id})` (`src/wallets/ledger-cursor.ts`, helpers puros + unit spec). Opacidade garante liberdade de mudar o formato com versionamento (`v`);
+  - `limit` default **50**, máximo **200**; cursor/limit malformados → `400 INVALID_PAYLOAD` (reuso do código existente, não nova taxonomia — item 7 consolida o mapeamento);
+  - página devolve os campos puros do ledger (`id`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter`, `createdAt`). Correlação com a transação (kind/external) é feita via `GET /wagering/transactions/:transactionId` — sem join especulativo.
+- **`GET /wagering/transactions/:transactionId`** e **`GET /providers/:providerId/wagering/transactions/:externalTransactionId`** (`WagerTransactionService.findById` / `findByProviderExternal`): mesmo `WagerTransactionView` (`id`, provider/external, player, wallet, round, game, kind, status, money, referências, `failureCode`, `createdAt`/`processedAt`); lookup por provider usa o unique `(provider_id, external_transaction_id)` do schema.
+- **404 distinto por recurso**: novo código `TRANSACTION_NOT_FOUND` em `ApiErrorCode` (ao lado de `WALLET_NOT_FOUND`). `walletId`/`transactionId` com formato não-UUID → **404** (não 400): o parâmetro nomeia um recurso em rota uuid; recurso não existente e id impossível são o mesmo caso para o cliente.
+- **Rota aninhada do provider**: o caminho `/providers/:providerId/wagering/transactions/:externalTransactionId` tem `/wagering` no meio e não cabe sob `@Controller('wagering')` (Nest prefixa). Criado controller dedicado `@Controller('providers')` (`ProviderWageringTransactionsController`), registrado no `WageringModule`.
+- **Util compartilhado `src/common/id/is-uuid.ts`** (predicado puro), reusado por `WalletService` e `WagerTransactionService` para evitar duplicação do regex.
+- Testes: unit do cursor/limit + **e2e real** `test/read.e2e.test.ts` (Postgres dedicado, `AppModule`): GET wallet com saldo/versão, paginação em páginas (sem duplicatas/perdas), estabilidade quando novas entradas chegam entre páginas, wallet zerada sem lançamentos (página vazia), lookups por id interno e por provider/external, `failureCode` de rejeitado, 404s (uuid inexistente + formato inválido) e 400s de cursor/limit.
+
+### Pendências (Fases 4–5)
+- Mesmas do item 3.1/3.2 (índice único de single-reversal, locking final, outbox). Item 5 (reconciliação) é a próxima etapa da Fase 3.

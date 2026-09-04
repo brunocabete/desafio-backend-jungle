@@ -5,6 +5,7 @@ export type ApiErrorCode =
   | 'WALLET_ALREADY_EXISTS'
   | 'IDEMPOTENCY_CONFLICT'
   | 'WALLET_NOT_FOUND'
+  | 'TRANSACTION_NOT_FOUND'
   | 'INTERNAL_ERROR';
 
 interface ApiErrorBody {

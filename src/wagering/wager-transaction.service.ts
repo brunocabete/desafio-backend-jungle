@@ -30,6 +30,7 @@ import {
   type WagerApplyResult,
 } from '../domain/wager/wager-transaction-applier.js';
 import { wagerPayloadHash } from '../domain/wager/idempotency.js';
+import { isUuid } from '../common/id/is-uuid.js';
 import {
   PENDING_REFERENCE_MAX_ATTEMPTS,
   PENDING_REFERENCE_TTL_MS,
@@ -108,6 +109,31 @@ export class WagerWalletNotFoundError extends Error {
     super(`wallet '${walletId}' does not exist`);
     this.name = 'WagerWalletNotFoundError';
   }
+}
+
+export class WagerTransactionNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WagerTransactionNotFoundError';
+  }
+}
+
+export interface WagerTransactionView {
+  id: string;
+  providerId: string;
+  externalTransactionId: string;
+  playerId: string;
+  walletId: string;
+  roundId: string;
+  gameId: string;
+  kind: WagerTransactionKind;
+  status: WagerTransactionStatus;
+  money: MoneyProps;
+  referenceExternalTransactionId?: string;
+  referenceTransactionId?: string;
+  failureCode?: FailureCodeType;
+  createdAt: Date;
+  processedAt?: Date;
 }
 
 export class WagerIdempotencyConflictError extends Error {
@@ -357,6 +383,29 @@ interface LedgerRowProps {
   createdAt: Date;
 }
 
+function toWagerTransactionView(
+  row: WagerTransactionRow,
+): WagerTransactionView {
+  const transaction = WagerTransaction.rehydrate(toWagerState(row));
+  return {
+    id: transaction.id,
+    providerId: transaction.providerId,
+    externalTransactionId: transaction.externalTransactionId,
+    playerId: transaction.playerId,
+    walletId: transaction.walletId,
+    roundId: transaction.roundId,
+    gameId: transaction.gameId,
+    kind: transaction.kind,
+    status: transaction.status,
+    money: transaction.money.toJSON(),
+    referenceExternalTransactionId: transaction.referenceExternalTransactionId,
+    referenceTransactionId: transaction.referenceTransactionId,
+    failureCode: transaction.failureCode,
+    createdAt: transaction.createdAt,
+    processedAt: transaction.processedAt,
+  };
+}
+
 function toWagerRowProps(
   transaction: WagerTransaction,
 ): WagerTransactionRowProps {
@@ -417,6 +466,41 @@ export class WagerTransactionService {
       }
       throw error;
     }
+  }
+
+  async findById(transactionId: string): Promise<WagerTransactionView> {
+    if (!isUuid(transactionId)) {
+      throw new WagerTransactionNotFoundError(
+        `transaction '${transactionId}' does not exist`,
+      );
+    }
+    const em = this.orm.em.fork();
+    const row = (await em.findOne(WagerTransactionEntity, {
+      id: transactionId,
+    })) as unknown as WagerTransactionRow | null;
+    if (!row) {
+      throw new WagerTransactionNotFoundError(
+        `transaction '${transactionId}' does not exist`,
+      );
+    }
+    return toWagerTransactionView(row);
+  }
+
+  async findByProviderExternal(
+    providerId: string,
+    externalTransactionId: string,
+  ): Promise<WagerTransactionView> {
+    const em = this.orm.em.fork();
+    const row = (await em.findOne(WagerTransactionEntity, {
+      providerId,
+      externalTransactionId,
+    })) as unknown as WagerTransactionRow | null;
+    if (!row) {
+      throw new WagerTransactionNotFoundError(
+        `no transaction found for provider '${providerId}' and external transaction '${externalTransactionId}'`,
+      );
+    }
+    return toWagerTransactionView(row);
   }
 
   private async process(

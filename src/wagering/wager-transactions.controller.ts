@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
   Res,
 } from '@nestjs/common';
@@ -13,10 +15,14 @@ import { WagerTransactionStatus } from '../domain/wager-transaction/wager-transa
 import {
   InvalidWagerPayloadError,
   WagerIdempotencyConflictError,
+  WagerTransactionNotFoundError,
   WagerTransactionService,
   WagerWalletNotFoundError,
 } from './wager-transaction.service.js';
-import type { WagerSubmitView } from './wager-transaction.service.js';
+import type {
+  WagerSubmitView,
+  WagerTransactionView,
+} from './wager-transaction.service.js';
 
 @Controller('wagering')
 export class WagerTransactionsController {
@@ -51,6 +57,45 @@ export class WagerTransactionsController {
       }
       if (error instanceof WagerIdempotencyConflictError) {
         return httpError(409, 'IDEMPOTENCY_CONFLICT', error.message);
+      }
+      throw error;
+    }
+  }
+
+  @Get('transactions/:transactionId')
+  async getById(
+    @Param('transactionId') transactionId: string,
+  ): Promise<WagerTransactionView> {
+    try {
+      return await this.wagerTransactionService.findById(transactionId);
+    } catch (error) {
+      if (error instanceof WagerTransactionNotFoundError) {
+        return httpError(404, 'TRANSACTION_NOT_FOUND', error.message);
+      }
+      throw error;
+    }
+  }
+}
+
+@Controller('providers')
+export class ProviderWageringTransactionsController {
+  constructor(
+    private readonly wagerTransactionService: WagerTransactionService,
+  ) {}
+
+  @Get(':providerId/wagering/transactions/:externalTransactionId')
+  async getByProviderExternal(
+    @Param('providerId') providerId: string,
+    @Param('externalTransactionId') externalTransactionId: string,
+  ): Promise<WagerTransactionView> {
+    try {
+      return await this.wagerTransactionService.findByProviderExternal(
+        providerId,
+        externalTransactionId,
+      );
+    } catch (error) {
+      if (error instanceof WagerTransactionNotFoundError) {
+        return httpError(404, 'TRANSACTION_NOT_FOUND', error.message);
       }
       throw error;
     }
