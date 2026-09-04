@@ -499,31 +499,20 @@ export class WagerTransactionService {
     normalized: NormalizedWagerSubmit,
     inbox?: SqsInboxContext,
   ): Promise<WagerSubmitView> {
-    if (inbox) {
-      try {
-        return await this.process(normalized, inbox);
-      } catch (error) {
-        if (
-          error instanceof UniqueConstraintViolationException &&
-          isIdempotencyConstraintViolation(error)
-        ) {
-          const view = await this.resolveExisting(normalized);
-          await this.markInboxProcessed(inbox);
-          return view;
-        }
-        throw error;
-      }
-    }
     try {
-      return await this.process(normalized);
+      return await this.process(normalized, inbox);
     } catch (error) {
       if (
-        error instanceof UniqueConstraintViolationException &&
-        isIdempotencyConstraintViolation(error)
+        !(error instanceof UniqueConstraintViolationException) ||
+        !isIdempotencyConstraintViolation(error)
       ) {
-        return this.resolveExisting(normalized);
+        throw error;
       }
-      throw error;
+      const view = await this.resolveExisting(normalized);
+      if (inbox) {
+        await this.markInboxProcessed(inbox);
+      }
+      return view;
     }
   }
 
@@ -655,25 +644,8 @@ export class WagerTransactionService {
         createdAt: now,
       });
 
-      let reference: WagerTransaction | undefined;
-      if (transaction.requiresReference()) {
-        const referenceRow = (await em.findOne(WagerTransactionEntity, {
-          providerId: normalized.providerId,
-          externalTransactionId: normalized.referenceExternalTransactionId,
-        })) as unknown as WagerTransactionRow | null;
-        reference = referenceRow
-          ? WagerTransaction.rehydrate(toWagerState(referenceRow))
-          : undefined;
-      }
-
-      let referenceAlreadyReversed = false;
-      if (reference && reference.status === WagerTransactionStatus.Processed) {
-        referenceAlreadyReversed = await this.hasProcessedReversal(
-          em,
-          reference,
-          transaction.kind,
-        );
-      }
+      const { reference, referenceAlreadyReversed } =
+        await this.resolveReference(em, transaction);
 
       const result = applyWagerTransaction({
         wallet,
@@ -825,25 +797,8 @@ export class WagerTransactionService {
       const wallet = Wallet.rehydrate(toWalletState(walletRow));
       const transaction = WagerTransaction.rehydrate(toWagerState(current));
 
-      let reference: WagerTransaction | undefined;
-      if (transaction.requiresReference()) {
-        const referenceRow = (await em.findOne(WagerTransactionEntity, {
-          providerId: transaction.providerId,
-          externalTransactionId: transaction.referenceExternalTransactionId,
-        })) as unknown as WagerTransactionRow | null;
-        reference = referenceRow
-          ? WagerTransaction.rehydrate(toWagerState(referenceRow))
-          : undefined;
-      }
-
-      let referenceAlreadyReversed = false;
-      if (reference && reference.status === WagerTransactionStatus.Processed) {
-        referenceAlreadyReversed = await this.hasProcessedReversal(
-          em,
-          reference,
-          transaction.kind,
-        );
-      }
+      const { reference, referenceAlreadyReversed } =
+        await this.resolveReference(em, transaction);
 
       const result = applyWagerTransaction({
         wallet,
@@ -978,6 +933,32 @@ export class WagerTransactionService {
       kind: reversalKind,
     });
     return count > 0;
+  }
+
+  /** Resolves a transaction's reference (by provider external id) and whether
+   * it was already reversed by the same kind of operation. */
+  private async resolveReference(
+    em: EntityManager,
+    transaction: WagerTransaction,
+  ): Promise<{
+    reference: WagerTransaction | undefined;
+    referenceAlreadyReversed: boolean;
+  }> {
+    if (!transaction.requiresReference()) {
+      return { reference: undefined, referenceAlreadyReversed: false };
+    }
+    const referenceRow = (await em.findOne(WagerTransactionEntity, {
+      providerId: transaction.providerId,
+      externalTransactionId: transaction.referenceExternalTransactionId,
+    })) as unknown as WagerTransactionRow | null;
+    const reference = referenceRow
+      ? WagerTransaction.rehydrate(toWagerState(referenceRow))
+      : undefined;
+    const referenceAlreadyReversed =
+      reference?.status === WagerTransactionStatus.Processed
+        ? await this.hasProcessedReversal(em, reference, transaction.kind)
+        : false;
+    return { reference, referenceAlreadyReversed };
   }
 
   private syncWagerRow(

@@ -3,8 +3,6 @@ import { MikroORM } from '@mikro-orm/core';
 import { Injectable, Logger } from '@nestjs/common';
 import { createSqsClient, sqsEnv } from '../common/config/sqs.js';
 
-export { sqsEnv };
-
 const SQS_PROBE_TIMEOUT_MS = 3_000;
 
 export type ComponentState = 'up' | 'down';

@@ -1,4 +1,5 @@
-import { sqsEnv, summarizeReadiness } from './health.service.js';
+import { summarizeReadiness } from './health.service.js';
+import { sqsEnv } from '../common/config/sqs.js';
 
 describe('summarizeReadiness', () => {
   it('reports ok when database and sqs are up', () => {
