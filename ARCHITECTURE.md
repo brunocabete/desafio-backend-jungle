@@ -1,40 +1,68 @@
-# Decisões arquiteturais a respeito do projeto
+# Decisões de arquitetura — Jungle Wagering Processor
 
-## Money
+Este arquivo resume as decisões centrais de arquitetura do projeto. Os requisitos estão em SPECS.MD (copia do readme do enunciado do desafio). Para o detalhamento de cada decisão, com contexto, alternativas consideradas e verificação feita em cada etapa, o arquivo de referência é o ARCHITECTURE_SUGGESTIONS.md, mantido ao longo de todo o desenvolvimento. O roadmap está em PLANNING.md e foi usado para o desenvolvimento gradual do projeto.
 
-Para o objeto Money, temos um objeto de valor com um construtor privado.
-Como Money é uma, senão A principal abstração deste projeto, é necessário que sua implementação seja absolutamente consistente.
+## Visão geral
 
-O construtor privado faz com que quaisuqer instanciações desse objeto precisem ser validadas pela lógica interna do objeto durante sua criação pelos métodos from e zero.
-O método de arredondamento utilizado pela biblioteca Decimal foi definido explicitamente, uma vez que em aplicações que lidam com dinheiro, essa é uma decisão consciente por parte dos desenvolvedores baseado em fatores a serem discutidos com o time de produto.
+O serviço recebe operações de apostas de vários provedores (uma aposta pode virar vitória, derrota, estorno ou rollback) e liquida uma carteira por jogador. A entrega é no mínimo uma vez, ou seja: mensagens podem duplicar, chegar fora de ordem e várias instâncias podem tocar a mesma carteira ao mesmo tempo. Por isso o banco de dados é a fonte da verdade. A fila é apenas uma otimização de ordenação e deduplicação, nunca a garantia final.
 
-## Wallet
+## Dinheiro
 
-Um dos pontos principais a serem decididos no objeto de carteira é como é feito o locking do registro no caso de acessos simultâneos/race condition.
+Dinheiro nunca é representado como número de ponto flutuante. Usei a biblioteca decimal.js e um objeto de valor imutável Money, com construtor privado e validações internas. Na fronteira o valor é sempre uma string decimal com duas casas. Entradas inválidas são rejeitadas pelas validações.
+O modelo aceita várias moedas, mas o padrão aplicado nas entradas é BRL. Precisão e arredondamento são definidos explicitamente, como decisão de produto. No banco o dinheiro vive em colunas numéricas exatas com a moeda ao lado; o driver entrega o valor como string e a aplicação reconstrói o objeto Money, sem passar por número intermediário.
 
-Na fase inicial cogitei o **locking otimista** via `version` (a carteira é de um jogador, então a contenção tende a ser rara). Na **fase final de concorrência (§5 do desafio) essa escolha foi revisada e fechada como locking pessimista**: toda liquidação não é um update condicionado único — ela envolve wallet + lançamento de ledger + estado da transação + inbox/outbox **na mesma transação SQL**. Lock otimista exigiria CAS no saldo/`version` + retry de toda a transação multi-tabela, com re-execução de efeitos; o `FOR UPDATE` por linha da wallet serializa sem lost update e sem loop de retry. A granularidade é a **linha da wallet** (sem lock global), e `wallet.version` ficou como coluna *plain* (auditoria), sem `@Version` do ORM. Detalhes e justificativa: `ARCHITECTURE_SUGGESTIONS.md` §25.
+## Concorrência
 
-A reconciliação lê com `FOR SHARE`; como todo escritor trava a mesma linha com `FOR UPDATE`, saldo e ledger não mudam durante a reconstrução. Os uniques do schema são a rede de segurança para corridas que não passam pelo lock (ex.: criação de wallet duplicada).
+A unidade de concorrência é a carteira. Todo caminho que altera saldo, seja pela API, pela fila ou pelo reprocessamento de referências pendentes, primeiro trava a linha da carteira com um select for update e só então lê e recalcula o saldo. A escolha foi pelo lock pessimista em vez do otimista: uma liquidação não é um update condicionado simples, ela envolve carteira, lançamento no ledger, estado da transação e eventos na mesma transação SQL. O lock otimista exigiria comparar e atualizar o saldo condicionalmente e repetir toda essa transação multi-tabela em caso de conflito, com reexecução de efeitos. Como a disputa por uma carteira de jogador é rara e curta, o lock de linha serializa sem perda de atualização e sem loops de tentativa.
 
+A coluna version da carteira é um contador que só sobe quando o saldo muda e aparece nas respostas da API e no evento de mudança de saldo. Só serve como auditoria e como gancho caso um dia qa estrategia de locking mude.
 
-## Wager transaction
+## Estados da transação
 
-Aqui temos uma state machine com regras bem definidas e que devem ser checadas em todos os processos de transição de estado. Para isso temos o mapeamento em ALLOWED_TRANSITIONS que gera erros de negócio sempre que uma transição não permitida tenta ocorrer.
-
-Para transações que se derivam de outras (`REFUND`/`ROLLBACK`), o **`referenceExternalTransactionId`** do provedor é obrigatório e mantém a consistência dos dados: a referência é resolvida por `(providerId, referenceExternalTransactionId)` e precisa pertencer ao mesmo provider/player/wallet/rodada/moeda. `OPENING` é interno (criação de wallet) e não pode ser submetido pela API/fila.
-
-Estados imutáveis também são definidos pois não há nenhuma operação que pode ser realizada na transação após ela ser definida como processada, rejeitada ou com falha.
-
-## Idempotencia e Hashing
-
-Para a criação da chave de idempotencia, são retirados apenas os valores presentes nas regras de negócio daquele objeto para a geração da hash sem utilizar valores temporais (JSON canônico + SHA-256 dos campos de negócio — o header de transporte não entra). O `payloadHash` é persistido junto da transação:
-
-- chave nova → processa;
-- chave existente com **mesmo** hash → replay, devolvendo o resultado original (incluindo o saldo observado);
-- chave existente com hash **diferente** → conflito (`IDEMPOTENCY_CONFLICT`), nunca replay.
-
-A unicidade é garantida no banco por `(provider_id, idempotency_key)`; corrida entre instâncias resolve o unique em replay/conflict via reload.
+Uma transação nasce pendente e pode mudar para pendente de referência ou direto para um estado terminal como "processado", "rejeitado" e "com falha".
 
 
-## Schema do banco
-    Dinheiro é persistido em colunas exatas `numeric(20,2)` + `currency varchar(3)`; o driver do Postgres devolve `numeric` como string e a aplicação reconstrói o `Money` via `Money.from` (sem `number` intermediário). Ordenação e aritmética de checagem (saldo/ledger) acontecem no Postgres, com precisão exata. O ledger é imutável por trigger (`BEFORE UPDATE OR DELETE`) e a unicidade de reversão (`REFUND`/`ROLLBACK` `PROCESSED`) é garantida por índice parcial único `uq_wager_single_reversal`.
+## Idempotência e hash do payload
+
+A chave de idempotência vem de um cabeçalho obrigatório e o padrão recomendado é provedor + identificador externo. O hash do payload é calculado sobre um JSON canônico (utilizando biblioteca externa), ignorando cabeçalho e metadados de transporte.
+Se a chave é nova, a transação é processada. Se a chave já existe com o mesmo hash, respondo com o resultado original e marco como replay. Se a chave existe com hash diferente, é conflito.
+
+## Ledger
+
+O ledger é imutável por construção e reforçado por um trigger no banco que impede atualização e exclusão. Cada lançamento guarda saldo antes e depois, e o banco valida a aritmética de acordo com a direção.
+
+## Outbox e inbox transacionais
+
+Tudo é escrito na mesma transação SQL: o registro de inbox quando a entrada veio da fila, a mudança de saldo, o lançamento do ledger, a transação e os eventos de integração, e nada é publicado antes do commit. 
+
+## Consumidor da fila
+
+O consumidor usa o mesmo caminho de código da API HTTP e só confirma a mensagem depois que a transação foi confirmada no banco. Mensagens duplicadas ou reentregues não repetem efeito. Erros são classificados: mensagem corrompida, payload inválido ou conflito de idempotência são permanentes e vão para a fila de mensagens mortas; resultado de negócio terminal não é erro e é confirmado; falha transitória de infra não é confirmada e a reentrega funciona como espera, indo para a fila de mensagens mortas após o limite de recebimentos. A ordem da fila FIFO é uma otimização, não a garantia. No encerramento por sinal, o consumidor para de buscar mensagens, termina o lote em andamento dentro de um tempo de tolerância ou devolve a visibilidade, e a reentrega é segura.
+
+## Reconciliação
+
+O endpoint de reconciliação compara o saldo guardado na carteira com o saldo reconstruído a partir da soma dos lançamentos do ledger, tudo dentro de uma transação com lock compartilhado na carteira. Se houver divergência, ela é registrada em log, contada em métrica e sinalizada na resposta; nunca é corrigida silenciosamente. (exemplo no logs_example.txt)
+
+## Observabilidade
+
+Os logs são estruturados em JSON e carregam identificadores de correlação, mensagem, transação,
+carteira e provedor, sem payloads financeiros completos. Há um exemplo no arquivo logs_examples.txt
+
+
+## Testes
+
+**Testes de unidade:** dinheiro, invariantes da carteira, regras de cada operação, transições de
+estado e idempotência com payload divergente.
+
+**Integração e ponta a ponta** (rodam contra Postgres e um emulador de SQS reais, em bancos
+dedicados): migrations e constraints, atomicidade entre carteira, ledger, inbox e outbox, consumo
+com deduplicação, reentrega e fila de mensagens mortas, referências pendentes com expiração,
+publishers concorrentes e reconciliação.
+
+**Concorrência:** paralelismo real, incluindo múltiplos processos independentes, cenários de
+queda no meio do processamento e reinício com consistência final. Em todos os testes vale o
+invariante de que o saldo da carteira é igual ao saldo reconstruído pelo ledger.
+
+**Carga** (opcional, exposto como comando próprio): registra ambiente, metodologia, taxa de
+processamento, latências em percentis, taxa de erro, conflitos de concorrência e atraso da
+outbox.
