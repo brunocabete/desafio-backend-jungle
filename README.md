@@ -36,15 +36,78 @@ test/               e2e com Postgres + MiniStack reais (ver "Testes")
 
 ## Pré-requisitos
 
-- **Bun 1.x** (runtime de tudo: dev, prod e testes)
-- **Docker Compose** para Postgres + MiniStack (+ pgweb opcional em `:8081`)
+- **Bun 1.x** (necessário para desenvolvimento local, migrations e testes)
+- **Docker Compose** para executar a stack completa ou apenas as dependências
+- Docker com Compose v2
 
-## Setup e infraestrutura local
+## Execução completa com Docker
+
+Esse é o fluxo mais simples para os examinadores: a aplicação, PostgreSQL,
+MiniStack e pgweb são executados em containers.
 
 ```bash
-cp .env.example .env        # credenciais locais do compose; ajuste se preciso
-docker compose up -d        # postgres + ministack (+ pgweb)
+cp .env.example .env
+docker compose up -d --build
+```
+
+O serviço `app` constrói a imagem de produção, aguarda PostgreSQL e MiniStack
+ficarem saudáveis, aplica as migrations e inicia a API. Verifique o estado e a
+API com:
+
+```bash
+docker compose ps
+curl http://localhost:3000/health/live
+curl http://localhost:3000/health/ready
+```
+
+Para acompanhar os logs ou desligar a stack:
+
+```bash
+docker compose logs -f app
+docker compose down
+```
+
+## Execução híbrida: dependências em Docker e app local
+
+Esse fluxo é recomendado para desenvolvimento e debugging. PostgreSQL, MiniStack
+e pgweb continuam isolados em containers, enquanto NestJS roda localmente com
+watch mode e usa `localhost` conforme o `.env`.
+
+```bash
+cp .env.example .env
 bun install
+docker compose up -d postgres ministack pgweb
+bun run migration:up
+bun run start:dev
+```
+
+Nesse modo, a API fica disponível em `http://localhost:3000`. Para encerrar
+somente as dependências:
+
+```bash
+docker compose stop postgres ministack pgweb
+```
+
+Não execute `docker compose up -d --build` simultaneamente nesse fluxo, pois
+isso também inicia o serviço `app` em container e disputa a porta `3000`.
+
+## Testes
+
+Os testes unitários podem ser executados sem Docker:
+
+```bash
+bun install
+bun run test
+```
+
+Os testes e2e e o load test precisam de PostgreSQL e MiniStack acessíveis. O
+fluxo recomendado é iniciar apenas as dependências e executar os comandos
+localmente:
+
+```bash
+docker compose up -d postgres ministack
+bun run test:e2e
+bun run test:load
 ```
 
 As filas FIFO são criadas uma vez na subida do MiniStack por
@@ -58,34 +121,35 @@ As filas FIFO são criadas uma vez na subida do MiniStack por
 
 Verificação manual: `docker compose exec ministack aws --endpoint-url=http://localhost:4566 sqs list-queues`.
 
-## Comandos
+## Comandos do projeto
 
 | Comando | O que faz |
 |---|---|
 | `bun run start:dev` | servidor dev (watch, runtime Bun) |
 | `bun run build` + `bun run start:prod` | build (`nest build`) e execução (`bun dist/main`) |
 | `bun run test` | unit tests (`bun test ./src`) |
-| `bun run test:e2e` | e2e (`bun test ./test`) — Postgres + MiniStack de pé |
-| `bun run test:load` | load test (diferencial §14; relatório no console) |
+| `bun run test:e2e` | e2e (`bun test ./test`) — Postgres + MiniStack acessíveis |
+| `bun run test:load` | load test (diferencial §14; relatório no console) — dependências acessíveis |
 | `bun run lint` | `oxlint src/ test/` |
 | `bun run format` | prettier (single quotes, trailing commas) |
 | `bun run migration:create --name=<nome>` | gera migration + atualiza snapshot |
 | `bun run migration:up` / `migration:down` | aplica/reverte migrations (Postgres de pé) |
 
-Migrar um DB novo antes de subir o app: `bun run migration:up`.
+No fluxo híbrido, migre um DB novo antes de subir o app: `bun run migration:up`.
+No fluxo Docker, o serviço `app` executa `migration:up` automaticamente.
 
 ### Variáveis de ambiente (`.env`, ver `.env.example`)
 
 | Variável | Descrição |
 |---|---|
-| `POSTGRES_DB/USER/PASSWORD/PORT`, `DATABASE_HOST/PORT` | conexão Postgres (compose lê as `POSTGRES_*`) |
+| `POSTGRES_DB/USER/PASSWORD/PORT`, `DATABASE_HOST/PORT` | conexão Postgres; no app em container, `DATABASE_HOST=postgres` é configurado pelo Compose |
 | `AWS_ENDPOINT_URL`, `AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | MiniStack/SQS |
 | `AWS_SQS_QUEUE`, `AWS_SQS_DLQ_QUEUE`, `AWS_SQS_EVENTS_QUEUE` | filas (nomes acima) |
 | `WAGER_SQS_CONSUMER_ENABLED=true` + `WAGER_SQS_POLL_MS` | liga o consumer SQS (off p/ rodar só a API HTTP) |
 | `WAGER_OUTBOX_PUBLISHER_ENABLED=true` + `WAGER_OUTBOX_POLL_MS` | liga o publisher da outbox |
 | `WAGER_PENDING_WORKER_POLL_MS` | worker de `PENDING_REFERENCE` (default ~2s; `0` desliga) |
 | `WAGER_SQS_SHUTDOWN_TIMEOUT_MS` | grace period do shutdown do consumer (default 30s) |
-| `PORT` | porta HTTP (default 3000) |
+| `PORT`, `APP_PORT` | porta HTTP da aplicação (default 3000); `APP_PORT` controla a porta publicada pelo Compose |
 
 ## API HTTP
 

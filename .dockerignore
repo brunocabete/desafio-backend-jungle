@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.env
+*.tsbuildinfo
+coverage
+test
+backend-challenge-audit-checklist.md
+backend-challenge-audit-result.md

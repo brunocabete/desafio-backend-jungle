@@ -60,6 +60,51 @@ services:
       timeout: 5s
       retries: 5
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-app}-app
+    restart: unless-stopped
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      AWS_ENDPOINT_URL: http://ministack:4566
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      AWS_SQS_QUEUE: ${AWS_SQS_QUEUE:-wager-transactions.fifo}
+      AWS_SQS_DLQ_QUEUE: ${AWS_SQS_DLQ_QUEUE:-wager-transactions-dlq.fifo}
+      AWS_SQS_EVENTS_QUEUE: ${AWS_SQS_EVENTS_QUEUE:-wager-events.fifo}
+      WAGER_SQS_CONSUMER_ENABLED: ${WAGER_SQS_CONSUMER_ENABLED:-true}
+      WAGER_SQS_POLL_MS: ${WAGER_SQS_POLL_MS:-1000}
+      WAGER_OUTBOX_PUBLISHER_ENABLED: ${WAGER_OUTBOX_PUBLISHER_ENABLED:-true}
+      WAGER_OUTBOX_POLL_MS: ${WAGER_OUTBOX_POLL_MS:-1000}
+      WAGER_PENDING_WORKER_POLL_MS: ${WAGER_PENDING_WORKER_POLL_MS:-2000}
+      WAGER_SQS_SHUTDOWN_TIMEOUT_MS: ${WAGER_SQS_SHUTDOWN_TIMEOUT_MS:-30000}
+      PORT: 3000
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ministack:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:3000/health/live').then(r => { if (!r.ok) process.exit(1) })"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:
   ministack_state:
