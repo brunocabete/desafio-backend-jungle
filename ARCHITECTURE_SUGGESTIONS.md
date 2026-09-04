@@ -545,7 +545,7 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 - **Verificação**: `test/migrations.e2e.test.ts` agora também (a) confere o índice em `pg_indexes`; (b) BET + `REFUND` `PROCESSED` ok; (c) `ROLLBACK` `PROCESSED` do mesmo BET (kind diferente) ok; (d) `REFUND` `REJECTED` do mesmo BET (fora do predicado) ok; (e) 2º `REFUND` `PROCESSED` do mesmo BET → viola `uq_wager_single_reversal`; (f) `down({to: 0})` continua revertendo tudo. Enforcement também validado à mão no Postgres local. Combinado com os e2e de wagering/concurrency (dupla reversão concorrente e `REFUND`+`ROLLBACK` do mesmo BET), o schema é agora a última linha de defesa das regras 3–4 do §7.
 
 ### Pendências (Fase 7)
-- Concluídas em §27–§29; resta apenas o diferencial opcional `bun run test:load`.
+- Concluídas em §27–§30 — matriz §13 completa + load test entregue.
 
 ---
 
@@ -576,4 +576,23 @@ Fechamento da matriz de concorrência com **processos reais** + Ministack + Post
 - **Verificação**: `bun test ./test/crash-recovery.e2e.test.ts` verde em 3 execuções consecutivas (~37s); suíte completa unit 231 + e2e 70 verdes, lint e `tsc --noEmit` limpos.
 
 ### Pendências (Fase 7)
-- Apenas o diferencial opcional `bun run test:load` (metodologia honesta + p50/p95/p99). Matriz §13 completa.
+- ~~Diferencial opcional `bun run test:load`~~ → concluído (ver §30).
+
+---
+
+## 30. Fase 7, item 4 — Load test `bun run test:load` (diferencial §14)
+
+**Script** `test/load/run.ts` (`"test:load": "bun test/load/run.ts"`) — experimento **end-to-end honesto** contra o stack real:
+- app Nest completo (endpoints HTTP reais, use case transacional, outbox rows na mesma SQL transaction, `/metrics` real), Postgres dedicado migrado do zero (`desafio_jungle_load`), Ministack com **outbox publisher ON** (claim atômico + backoff reais). Consumer SQS e scheduler de `PENDING_REFERENCE` desligados (o load foca o caminho HTTP; o consumer compartilha o mesmo use case e é coberto em §13).
+- **Metodologia**: seeding de `LOAD_WALLETS` (default 120) + 1 hot wallet; warm-up (default 100, descartado da latência); **fase distribuída** (1500 bets `10.00` sobre 120 wallets, 40 workers) e **fase hot wallet** (300 bets `1.00` na MESMA wallet, 40 workers — mede a serialização por `FOR UPDATE`); latências amostradas por request; erros = transporte + HTTP ≥ 500 (422 = rejeição de negócio, contada à parte); outbox observada **direto no banco** (o gauge `/metrics` só atualiza ao fim do lote de 100 publicações — grosso sob carga) até `pending = 0`, registrando o pico de lag. Knobs via env (`LOAD_*`).
+- **Resultados (run default, 2026-09-04, local):**
+  - ambiente: Bun 1.4.0 / linux; Postgres localhost:5432; Ministack :4566 (`wager-events.fifo`); total wall **47.8s**;
+  - **distribuída**: **477.8 req/s**; latência avg 82.9ms, **p50 82.1, p95 101.4, p99 110.4 ms**; 0 erros (1500/1500 `PROCESSED`);
+  - **hot wallet**: **53.6 req/s**; avg 581.4ms, p50 263.7, **p95 1894.3, p99 2062.1 ms** — o efeito esperado do lock pessimista por wallet (espera em fila do row lock), 0 erros (300/300 `PROCESSED`);
+  - **erro geral**: 0/1800 (0.000%);
+  - métricas cumulativas: `wager_transactions_total{PROCESSED}=1900` (incl. warm-up), `REJECTED=0`, `wager_duplicates_total=0`, **`db_lock_conflicts_total=0`** (esperado: transação única por wallet com `FOR UPDATE` não gera deadlock/lock-timeout; a contenção aparece como latência na hot wallet, não como conflito);
+  - **outbox**: `pending=0`, `published=4042`, **max lag observado ~41.0s** (backlog drenado em lotes de 100 publicações seriais contra o emulador — honesto sobre a capacidade local de publicação).
+- Nota de limitação: o número bruto não é a meta (§14); a qualidade = metodologia registrada + invariantes financeiras (0 erro, 0 duplicado, outbox drena) + efeito de contenção reproduzido.
+
+### Pendências (Fase 7)
+- Nenhuma — matriz §13 completa + load test entregue.

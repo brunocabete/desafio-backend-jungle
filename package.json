@@ -25,6 +25,7 @@
     "test:watch": "bun test --watch ./src",
     "test:cov": "bun test --coverage ./src",
     "test:e2e": "bun test ./test",
+    "test:load": "bun test/load/run.ts",
     "mikro-orm": "mikro-orm",
     "migration:create": "mikro-orm migration:create",
     "migration:up": "mikro-orm migration:up",
