@@ -9,6 +9,7 @@ import mikroOrmConfig from './mikro-orm.config.js';
 import { HealthModule } from './health/health.module.js';
 import { WalletModule } from './wallets/wallet.module.js';
 import { WageringModule } from './wagering/wagering.module.js';
+import { SqsModule } from './sqs/wager-sqs.module.js';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { WageringModule } from './wagering/wagering.module.js';
     HealthModule,
     WalletModule,
     WageringModule,
+    SqsModule,
   ],
   providers: [
     {

@@ -39,6 +39,7 @@ import {
 import { WalletEntity } from '../db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../db/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../db/entities/wallet-ledger-entry.entity.js';
+import { InboxMessageEntity } from '../db/entities/inbox-message.entity.js';
 import {
   currentEventContext,
   persistOutboxEvents,
@@ -95,6 +96,12 @@ export interface ReprocessPendingOptions {
   ttlMs?: number;
   maxAttempts?: number;
   limit?: number;
+}
+
+export interface SqsInboxContext {
+  consumerName: string;
+  messageId: string;
+  payloadHash: string;
 }
 
 export class InvalidWagerPayloadError extends Error {
@@ -468,8 +475,26 @@ function isIdempotencyConstraintViolation(
 export class WagerTransactionService {
   constructor(private readonly orm: MikroORM) {}
 
-  async submit(request: unknown): Promise<WagerSubmitView> {
+  async submit(
+    request: unknown,
+    inbox?: SqsInboxContext,
+  ): Promise<WagerSubmitView> {
     const normalized = normalizeWagerSubmit(request);
+    if (inbox) {
+      try {
+        return await this.process(normalized, inbox);
+      } catch (error) {
+        if (
+          error instanceof UniqueConstraintViolationException &&
+          isIdempotencyConstraintViolation(error)
+        ) {
+          const view = await this.resolveExisting(normalized);
+          await this.markInboxProcessed(inbox);
+          return view;
+        }
+        throw error;
+      }
+    }
     try {
       return await this.process(normalized);
     } catch (error) {
@@ -520,11 +545,22 @@ export class WagerTransactionService {
 
   private async process(
     normalized: NormalizedWagerSubmit,
+    inbox?: SqsInboxContext,
   ): Promise<WagerSubmitView> {
     const em = this.orm.em.fork();
     return em.transactional(async (em) => {
+      const inboxRow = inbox
+        ? ((await em.findOne(InboxMessageEntity, {
+            consumerName: inbox.consumerName,
+            messageId: inbox.messageId,
+          })) as unknown as { processedAt: Date | null } | null)
+        : null;
+      const recordInbox = (): Promise<void> =>
+        inbox && !inboxRow ? this.recordInbox(em, inbox) : Promise.resolve();
+
       const existing = await this.findByIdempotency(em, normalized);
       if (existing) {
+        await recordInbox();
         return this.viewForExisting(em, existing, normalized);
       }
 
@@ -539,6 +575,7 @@ export class WagerTransactionService {
 
       const afterLock = await this.findByIdempotency(em, normalized);
       if (afterLock) {
+        await recordInbox();
         return this.viewForExisting(em, afterLock, normalized);
       }
 
@@ -606,7 +643,36 @@ export class WagerTransactionService {
         WagerTransactionStatus.Pending,
       );
 
+      await recordInbox();
       return this.viewFor(wallet, transaction, false);
+    });
+  }
+
+  private async recordInbox(
+    em: EntityManager,
+    inbox: SqsInboxContext,
+  ): Promise<void> {
+    const receivedAt = new Date();
+    await em
+      .getConnection()
+      .execute(
+        `insert into "inbox_message" ("consumer_name", "message_id", "payload_hash", "received_at", "processed_at") values (?, ?, ?, ?, ?) on conflict do nothing`,
+        [
+          inbox.consumerName,
+          inbox.messageId,
+          inbox.payloadHash,
+          receivedAt,
+          receivedAt,
+        ],
+        undefined,
+        em.getTransactionContext(),
+      );
+  }
+
+  private async markInboxProcessed(inbox: SqsInboxContext): Promise<void> {
+    const em = this.orm.em.fork();
+    await em.transactional(async (em) => {
+      await this.recordInbox(em, inbox);
     });
   }
 

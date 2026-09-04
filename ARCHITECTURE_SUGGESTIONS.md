@@ -418,3 +418,35 @@ O que era persistido na Fase 3 (transação + saldo + ledger, e no reprocessamen
 ### Pendências (Fases 4, itens 2–5)
 - Inbox persistente entra quando houver consumidor SQS (item 2/3): a linha de `inbox_message` será inserida no mesmo `em.transactional` do `submit`, tornando §11 ("inbox quando a entrada for SQS") real.
 - Índice parcial único de single-reversal no schema; publisher da outbox com claim atômico (item 5); métricas de outbox lag/duplicatas (item da Fase 6).
+
+---
+
+## 22. Fase 4, itens 2+3 — Consumidor SQS com inbox persistente, ack pós-commit e DLQ (§10)
+
+Milestone único porque um consumidor "correto" precisa de inbox + classificação junto com o polling — separá-los forçaria reescrever o mesmo código duas vezes.
+
+### Decisão: o use case compartilhado passou a aceitar contexto de inbox (§11)
+- `WagerTransactionService.submit(request, inbox?: SqsInboxContext)` — o `SqsInboxContext` carrega `{ consumerName, messageId, payloadHash }`. Quando presente, o `process()` transacional (o MESMO do HTTP) lê a linha de inbox e, ao retornar **qualquer** resultado (novo, replay, `REJECTED` de negócio, `PENDING_REFERENCE`), grava a linha de `inbox_message` **na mesma SQL transaction** do saldo/ledger/outbox. Nada de inbox em memória (§5.2); ack só acontece depois do `submit` retornar (= commit).
+- **Inserção idempotente**: `insert into inbox_message ... on conflict do nothing` executado via `em.getConnection().execute(..., em.getTransactionContext())` (o `em.upsert`/`create` do MikroORM não expõe `ON CONFLICT DO NOTHING` com PK composta sem exceção que abortaria a tx). Domínio `InboxMessage.receive→markProcessed` continua a fonte das invariantes (testado na Fase 1); a gravação persistente usa a forma nativa do PG.
+- **Dedup**: redelivery encontra a linha processada e cai no replay por idempotência de negócio (sem reaplicar); corrida real de duas entregas simultâneas termina no `ON CONFLICT DO NOTHING` + `viewForExisting`. Resultado: efeito **único** no ledger mesmo com redelivery ou corrida.
+- `resolveExisting` (catch de unique) também grava o inbox após replay — janela não-atômica inócua (não há escrita de efeito nesse caminho).
+- `InvalidWagerPayloadError` (400) e `WagerIdempotencyConflictError` (409) **não** registram inbox: são erros permanentes de mensagem que vão para a DLQ.
+
+### Consumidor (`src/sqs/`)
+- `sqs-message.ts` — parsing puro do envelope §10 (`WagerTransactionRequested`): valida `messageId`/`type`/`data`, reusa `normalizeWagerSubmit(data)` (mesma fronteira do HTTP); `InvalidSqsMessageError` para envelope corrompido, `InvalidWagerPayloadError` propaga (payload inválido).
+- `wager-sqs.gateway.ts` — porta `WagerSqsGateway` (`receive`/`ack`/`moveToDlq`) + implementação `AwsWagerSqsGateway` (`@aws-sdk/client-sqs`): long-poll (WaitTime 10s, batch 10, visibility 60s, lê `ApproximateReceiveCount`). DLQ explícito = `SendMessage` na `wager-transactions-dlq.fifo` + delete da fila principal.
+- `wager-sqs.consumer.ts` — orquestra: `pollOnce()` recebe lote e processa **sequencialmente** (FIFO respeita ordem por grupo; o lock por wallet garante o resto); cada mensagem: parse → `submit` com inbox → `ack` (só após commit). Erros classificados:
+  - **permanente** (`InvalidSqsMessageError`/`InvalidWagerPayloadError`/`WagerIdempotencyConflictError`) → DLQ imediato;
+  - **transitório** (infra, `WagerWalletNotFoundError`) → sem ack; redelivery após visibility timeout funciona como backoff; ao atingir `SQS_MAX_RECEIVE_COUNT = 5` (`ApproximateReceiveCount`) → DLQ. A redrive policy da fila (maxReceiveCount 5, criada no compose) é a rede de segurança adicional;
+  - **resultado de negócio terminal** (`REJECTED` persistido, `PENDING_REFERENCE`) **não é erro** — `submit` retorna view → ack.
+- `SqsModule` no `AppModule`; consumidor **desligado por padrão**, ativa com `WAGER_SQS_CONSUMER_ENABLED=true` (+ `WAGER_SQS_POLL_MS`). Motivo: e2e que sobem o `AppModule` em paralelo não devem disputar mensagens da fila real; `.env` (dev) e `.env.example` documentam o flag. **Item 4 (SIGTERM graceful) fica para o próximo item** — hoje `onApplicationShutdown` apenas para o timer; a mensagem em voo volta por visibility timeout sem duplicar efeito (idempotência + inbox).
+- Decisão de config: gateway reusa `src/common/config/sqs.ts` (extraído do health — `sqsEnv`/`createSqsClient`, agora com `dlqQueue` de `AWS_SQS_DLQ_QUEUE`, fallback `wager-transactions-dlq.fifo`); health re-exporta `sqsEnv` (spec existente intacto).
+
+### Testes
+- Unit: `parseWagerQueueMessage` (válido, kind inválido, JSON quebrado, tipo desconhecido, sem messageId) e `WagerSqsConsumerService.handleMessage` com **fake gateway**: ack pós-sucesso + contexto de inbox, ack de `REJECTED` de negócio, DLQ de payload inválido/conflito, retry de transitório, DLQ no limite de receives; `consumeActionForFailure` puro.
+- **E2E real (Ministack + Postgres)** `test/sqs-consumer.e2e.test.ts`: env AWS apontando para `localhost:4566`, filas drenadas no início/fim (isolação); BET pela fila liquida + ack + linha de inbox; **redelivery do mesmo `messageId` não duplica débito** (inbox); REFUND fora de ordem vira `PENDING_REFERENCE` (ack) e resolve quando o BET chega pela fila; payload inválido vai para a DLQ (e não registra inbox).
+
+### Pendências
+- Item 4 (SIGTERM graceful: drenar em voo ou devolver visibilidade — hoje coberto por visibility timeout + idempotência, mas sem shutdown coordenado do loop).
+- Item 5 (publisher da outbox com claim atômico; múltiplos publishers).
+- Índice parcial único de single-reversal no schema (adiado de fases anteriores).

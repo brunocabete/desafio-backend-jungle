@@ -1,10 +1,9 @@
-import {
-  GetQueueUrlCommand,
-  SQSClient,
-  type SQSClientConfig,
-} from '@aws-sdk/client-sqs';
+import { GetQueueUrlCommand } from '@aws-sdk/client-sqs';
 import { MikroORM } from '@mikro-orm/core';
 import { Injectable, Logger } from '@nestjs/common';
+import { createSqsClient, sqsEnv } from '../common/config/sqs.js';
+
+export { sqsEnv };
 
 const SQS_PROBE_TIMEOUT_MS = 3_000;
 
@@ -46,40 +45,6 @@ export function summarizeReadiness(health: {
   };
 }
 
-interface SqsEnv {
-  region: string;
-  accessKeyId?: string;
-  secretAccessKey?: string;
-  endpoint?: string;
-  queue?: string;
-}
-
-export function sqsEnv(env: NodeJS.ProcessEnv = process.env): SqsEnv {
-  return {
-    region: env.AWS_DEFAULT_REGION ?? 'us-east-1',
-    accessKeyId: env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
-    endpoint: env.AWS_ENDPOINT_URL || undefined,
-    queue: env.AWS_SQS_QUEUE,
-  };
-}
-
-function buildSqsClient(env: SqsEnv): SQSClient {
-  const config: SQSClientConfig = {
-    region: env.region,
-  };
-  if (env.accessKeyId && env.secretAccessKey) {
-    config.credentials = {
-      accessKeyId: env.accessKeyId,
-      secretAccessKey: env.secretAccessKey,
-    };
-  }
-  if (env.endpoint) {
-    config.endpoint = env.endpoint;
-  }
-  return new SQSClient(config);
-}
-
 @Injectable()
 export class HealthService {
   private readonly logger = new Logger(HealthService.name);
@@ -110,7 +75,7 @@ export class HealthService {
     if (!env.queue) {
       return { up: false, message: 'AWS_SQS_QUEUE is not configured' };
     }
-    const client = buildSqsClient(env);
+    const client = createSqsClient(env);
     try {
       await withTimeout(
         client.send(new GetQueueUrlCommand({ QueueName: env.queue })),

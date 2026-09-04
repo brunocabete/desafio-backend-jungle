@@ -12,5 +12,6 @@ import {
     ProviderWageringTransactionsController,
   ],
   providers: [WagerTransactionService, PendingReferenceScheduler],
+  exports: [WagerTransactionService],
 })
 export class WageringModule {}

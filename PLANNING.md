@@ -12,7 +12,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 | 1 — Money and domain model | ✅ done (145 unit tests) |
 | 2 — DB schema, migrations, ORM | ✅ itens 1–3 e 5 done (migration inicial + teste de integração em DB limpo); item 4 adiado (forRoot na Fase 3) |
 | 3 — Application services & HTTP API | 🚧 itens 1–5 ✅ (`POST /wallets`; `POST /wagering/transactions`; worker `PENDING_REFERENCE`/TTL; GETs + ledger com cursor; reconciliation); 6 ✅ (health `/live` + `/ready` PG+SQS); 7 ✅ (mapeamento de status centralizado + falha transitória → 503). Resta: 8 (auth — será a **última** etapa do projeto) |
-| 4 — SQS consumer + transactionality | 🚧 item 1 ✅ (transactional outbox: eventos `WagerTransactionProcessed/Rejected/PendingReference` + `WalletBalanceChanged` gravados na `outbox_message` na mesma SQL transaction do submit, worker `PENDING_REFERENCE` e abertura OPENING — ver §21 do decision log). Restam: 2 (consumer SQS), 3 (inbox/ack/classificação), 4 (SIGTERM), 5 (publisher da outbox) |
+| 4 — SQS consumer + transactionality | 🚧 itens 1–3 ✅ (1: transactional outbox na mesma SQL transaction — ver §21 do decision log; 2+3: consumer SQS em `wager-transactions.fifo` reusando o use case, inbox persistente `(consumerName,messageId)` atômico via `ON CONFLICT`, ack só após commit, classificação negócio→ack / transitória→retry por visibility / permanente→DLQ com limite de receives — ver §22). Restam: 4 (SIGTERM graceful), 5 (publisher da outbox) |
 | 5 — Concurrency hardening | pending |
 | 6 — Observability | pending |
 | 7 — Test matrix | pending |
