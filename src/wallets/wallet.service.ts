@@ -1,9 +1,10 @@
 import {
   EntityManager,
+  LockMode,
   MikroORM,
   UniqueConstraintViolationException,
 } from '@mikro-orm/core';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   DEFAULT_CURRENCY,
   Money,
@@ -19,6 +20,10 @@ import {
   WagerTransactionKind,
 } from '../domain/wager-transaction/wager-transaction.js';
 import { wagerPayloadHash } from '../domain/wager/idempotency.js';
+import {
+  METRIC_NAMES,
+  MetricsService,
+} from '../common/metrics/metrics.service.js';
 import { isUuid } from '../common/id/is-uuid.js';
 import { WalletEntity } from '../db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../db/entities/wager-transaction.entity.js';
@@ -82,6 +87,38 @@ export interface WalletLedgerPage {
   entries: LedgerEntryView[];
   nextCursor: string | null;
   hasMore: boolean;
+}
+
+export interface ReconciliationView {
+  walletId: string;
+  storedBalance: MoneyProps;
+  calculatedBalance: MoneyProps;
+  difference: MoneyProps;
+  consistent: boolean;
+  checkedEntries: number;
+}
+
+export interface ReconciliationInput {
+  walletId: string;
+  storedBalance: MoneyProps;
+  calculatedBalance: MoneyProps;
+  checkedEntries: number;
+}
+
+export function buildReconciliationView(
+  input: ReconciliationInput,
+): ReconciliationView {
+  const stored = Money.from(input.storedBalance);
+  const calculated = Money.from(input.calculatedBalance);
+  const difference = stored.subtract(calculated);
+  return {
+    walletId: input.walletId,
+    storedBalance: stored.toJSON(),
+    calculatedBalance: calculated.toJSON(),
+    difference: difference.toJSON(),
+    consistent: difference.isZero(),
+    checkedEntries: input.checkedEntries,
+  };
 }
 
 export interface LedgerPageOptions {
@@ -200,7 +237,12 @@ function toLedgerEntryView(row: LedgerEntryRow): LedgerEntryView {
 
 @Injectable()
 export class WalletService {
-  constructor(private readonly orm: MikroORM) {}
+  private readonly logger = new Logger(WalletService.name);
+
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly metrics: MetricsService,
+  ) {}
 
   async create(input: CreateWalletInput): Promise<WalletView> {
     const { playerId, initialBalance } = parseCreateWallet(input);
@@ -302,6 +344,58 @@ export class WalletService {
       });
     }
     return { walletId, entries, nextCursor, hasMore };
+  }
+
+  async reconcile(walletId: string): Promise<ReconciliationView> {
+    if (!isUuid(walletId)) {
+      throw new WalletNotFoundError(walletId);
+    }
+    const em = this.orm.em.fork();
+    return em.transactional(async (em) => {
+      const walletRow = (await em.findOne(
+        WalletEntity,
+        { id: walletId },
+        { lockMode: LockMode.PESSIMISTIC_READ },
+      )) as unknown as WalletRow | null;
+      if (!walletRow) {
+        throw new WalletNotFoundError(walletId);
+      }
+
+      const reconstructed = (await em
+        .getConnection()
+        .execute(
+          `select coalesce(sum(case when "direction" = 'CREDIT' then "money_amount" else -"money_amount" end), 0)::numeric as total, count(*)::int as checked from "wallet_ledger_entry" where "wallet_id" = ?`,
+          [walletId],
+          'get',
+          em.getTransactionContext(),
+        )) as unknown as { total: string; checked: number };
+
+      const view = buildReconciliationView({
+        walletId,
+        storedBalance: {
+          amount: walletRow.balanceAmount,
+          currency: walletRow.currency,
+        },
+        calculatedBalance: {
+          amount: reconstructed.total,
+          currency: walletRow.currency,
+        },
+        checkedEntries: reconstructed.checked,
+      });
+
+      this.metrics.increment(METRIC_NAMES.walletReconciliationTotal);
+      if (!view.consistent) {
+        this.metrics.increment(METRIC_NAMES.walletReconciliationDivergent);
+        this.logger.warn(
+          `wallet reconciliation divergence: walletId=${walletId} ` +
+            `storedBalance=${view.storedBalance.amount} ` +
+            `calculatedBalance=${view.calculatedBalance.amount} ` +
+            `difference=${view.difference.amount} ` +
+            `checkedEntries=${view.checkedEntries}`,
+        );
+      }
+      return view;
+    });
   }
 
   private persistOpening(em: EntityManager, wallet: Wallet): void {

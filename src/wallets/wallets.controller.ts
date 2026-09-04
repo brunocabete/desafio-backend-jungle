@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { httpError } from '../common/http/api-error.js';
 import {
   InvalidLedgerCursorError,
@@ -10,6 +19,7 @@ import {
   WalletNotFoundError,
   WalletService,
   type CreateWalletInput,
+  type ReconciliationView,
   type WalletLedgerPage,
   type WalletView,
 } from './wallet.service.js';
@@ -65,6 +75,21 @@ export class WalletsController {
         error instanceof InvalidLedgerLimitError
       ) {
         return httpError(400, 'INVALID_PAYLOAD', error.message);
+      }
+      throw error;
+    }
+  }
+
+  @Post(':walletId/reconciliation')
+  @HttpCode(HttpStatus.OK)
+  async reconcile(
+    @Param('walletId') walletId: string,
+  ): Promise<ReconciliationView> {
+    try {
+      return await this.walletService.reconcile(walletId);
+    } catch (error) {
+      if (error instanceof WalletNotFoundError) {
+        return httpError(404, 'WALLET_NOT_FOUND', error.message);
       }
       throw error;
     }

@@ -11,7 +11,7 @@ Every phase is a reviewable milestone: **write tests alongside each change**, ke
 | 0 — Foundation | ✅ done |
 | 1 — Money and domain model | ✅ done (145 unit tests) |
 | 2 — DB schema, migrations, ORM | ✅ itens 1–3 e 5 done (migration inicial + teste de integração em DB limpo); item 4 adiado (forRoot na Fase 3) |
-| 3 — Application services & HTTP API | 🚧 itens 1–2 ✅ (`POST /wallets`); 3.1 ✅ (`POST /wagering/transactions`); 3.2 ✅ (worker `PENDING_REFERENCE`/TTL); 4 ✅ (GETs: wallet, ledger com cursor opaco, transações por id interno e por provider/ref). Restam: 5 (reconciliation), 6 (health checks), 7 (mapeamento de status), 8 (auth) |
+| 3 — Application services & HTTP API | 🚧 itens 1–2 ✅ (`POST /wallets`); 3.1 ✅ (`POST /wagering/transactions`); 3.2 ✅ (worker `PENDING_REFERENCE`/TTL); 4 ✅ (GETs: wallet, ledger com cursor opaco, transações por id interno e por provider/ref); 5 ✅ (`POST /wallets/:walletId/reconciliation`, divergência logada + métrica, nunca corrige). Restam: 6 (health checks), 7 (mapeamento de status), 8 (auth) |
 | 4 — SQS consumer + transactionality | pending |
 | 5 — Concurrency hardening | pending |
 | 6 — Observability | pending |

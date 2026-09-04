@@ -6,6 +6,7 @@ import { WalletLedgerEntryEntity } from '../src/db/entities/wallet-ledger-entry.
 import { WalletService } from '../src/wallets/wallet.service.js';
 import { WagerTransactionService } from '../src/wagering/wager-transaction.service.js';
 import { PENDING_REFERENCE_MAX_DELAY_MS } from '../src/wagering/pending-reference-retry.js';
+import { MetricsService } from '../src/common/metrics/metrics.service.js';
 import { ormOptionsFor, dropDatabaseIfExists } from './test-db.js';
 import { testDatabaseName } from './test-names.js';
 
@@ -21,7 +22,7 @@ describe('pending-reference worker (e2e)', () => {
     await dropDatabaseIfExists(TEST_DB);
     orm = await MikroORM.init(ormOptionsFor(TEST_DB));
     await orm.migrator.up();
-    walletService = new WalletService(orm);
+    walletService = new WalletService(orm, new MetricsService());
     wagerService = new WagerTransactionService(orm);
     provider = `provider-${randomUUID().slice(0, 8)}`;
   }, 60_000);

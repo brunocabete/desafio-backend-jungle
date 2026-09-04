@@ -336,4 +336,20 @@ Consultas do §9 implementadas. **Releitura: endpoints são read-only; nenhuma e
 - Testes: unit do cursor/limit + **e2e real** `test/read.e2e.test.ts` (Postgres dedicado, `AppModule`): GET wallet com saldo/versão, paginação em páginas (sem duplicatas/perdas), estabilidade quando novas entradas chegam entre páginas, wallet zerada sem lançamentos (página vazia), lookups por id interno e por provider/external, `failureCode` de rejeitado, 404s (uuid inexistente + formato inválido) e 400s de cursor/limit.
 
 ### Pendências (Fases 4–5)
-- Mesmas do item 3.1/3.2 (índice único de single-reversal, locking final, outbox). Item 5 (reconciliação) é a próxima etapa da Fase 3.
+- Mesmas do item 3.1/3.2 (índice único de single-reversal, locking final, outbox).
+
+---
+
+## 18. Fase 3, item 5 — Reconciliação `POST /wallets/:walletId/reconciliation`
+
+SPECS §9: comparar saldo **materializado** vs **reconstruído pelo ledger**; divergência é **logada**, **contada em métrica** e **sinalizada na resposta** — nunca corrigida silenciosamente.
+
+- **Endpoint** `POST /wallets/:walletId/reconciliation` → `200` com o shape exato do §9 (`walletId`, `storedBalance`, `calculatedBalance`, `difference`, `consistent`, `checkedEntries`); wallet ausente/id não-UUID → `404 WALLET_NOT_FOUND`.
+- **`storedBalance`** = coluna `wallet.balance_amount` (materializada). **`calculatedBalance`** = soma dos lançamentos do ledger (`CREDIT` soma, `DEBIT` subtrai) via **SQL agregado** (`sum(case when direction = 'CREDIT' then money_amount else -money_amount end)`) — aritmética exata no `numeric(20,2)` do Postgres, sem `number` JS. `checkedEntries` = `count(*)`.
+- **`difference`** = `stored − calculated` (Money imutável; pode ser **negativo** e serializa `-X.XX`). `consistent = difference.isZero()`.
+- **Leitura consistente sem REAPEATABLE READ**: `reconcile` roda em transação e adquire **`FOR SHARE`** na wallet (`LockMode.PESSIMISTIC_READ`). Todo escritor daquela wallet já faz `FOR UPDATE` na mesma linha antes de mexer no ledger — logo, enquanto a reconciliação segura o share lock, saldo e lançamentos não mudam (sem statement skew). A query agregada é executada **dentro da mesma transação** via `em.getConnection().execute(sql, params, 'get', em.getTransactionContext())`.
+- **`buildReconciliationView`** é helper puro (Money de domínio), testado em unit: consistente, diferença positiva e **negativa**, wallet zerada sem entries.
+- **Métrica**: criado `MetricsService` mínimo (`src/common/metrics/`, `MetricsModule` **`@Global`**) com contadores por nome + snapshot — primeiro tijolo de observabilidade (Fase 6 exporta). A reconciliação incrementa `wallet_reconciliation_total` sempre e `wallet_reconciliation_divergences` **somente** em divergência.
+- **Log de divergência**: `warn` com `walletId`, `storedBalance`, `calculatedBalance`, `difference` e `checkedEntries`. Hoje via `Nest Logger` (mensagem textual); campos **estruturados de topo** (`correlationId` + IDs) evoluem na Fase 6 junto do `JsonLogger`.
+- **Nunca corrige**: no caminho de divergência nada é escrito; a resposta sinaliza `consistent: false` e uma nova chamada volta a divergir.
+- Testes: unit de `MetricsService` e de `buildReconciliationView`; **e2e real** `test/reconciliation.e2e.test.ts` (Postgres dedicado, `AppModule`): wallet consistente pós-OPENING/BET/WIN, wallet zerada sem entries, divergência forçada por `UPDATE` direto no `balance_amount` (simulando corrupção) → `consistent: false`, diferença correta, saldo armazenado **inalterado** após a chamada, métrica de divergência incrementada.
