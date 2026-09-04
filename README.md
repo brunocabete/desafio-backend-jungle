@@ -252,4 +252,4 @@ Ver `ARCHITECTURE.md`/`ARCHITECTURE_SUGGESTIONS.md` para o desenho completo (loc
 - **E2E** (`bun run test:e2e`, requer `docker compose up -d`): migrations/constraints em Postgres dedicado; wallets; wagering; leitura; reconciliação; health; métricas; outbox e publisher (Ministack real); consumer SQS com inbox/DLQ; `PENDING_REFERENCE`; **matriz de concorrência** (`concurrency`, `multi-instance` com ≥3 processos reais, `crash-recovery` com SIGKILL pós-commit/pré-ack e restart com consistência final).
 - **Load** (`bun run test:load`): relatório honesto de ambiente/metodologia, throughput, p50/p95/p99, taxa de erro, lock conflicts e outbox lag (ver seção §30 do log de decisões).
 
-Os e2e criam bancos dedicados `desafio_jungle_*` e não tocam os dados de dev. O runtime de testes é o `bun test` (nada de vitest/jest).
+Os e2e criam bancos dedicados `desafio_jungle_*` e não tocam os dados de dev. O runtime de testes é o `bun test`.
