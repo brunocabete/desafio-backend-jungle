@@ -484,3 +484,24 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 
 ### Pendências
 - Índice parcial único de single-reversal no schema (adiado de fases anteriores — decisão registrada nas Fases 2–3).
+
+---
+
+## 25. Fase 5 — Concurrency hardening: estratégia final de locking (§8)
+
+**Decisão (fechada nesta fase): locking pessimista `FOR UPDATE` por wallet, como única mecanismo.** Desde a Fase 3 todo caminho que altera saldo já adquiria o lock da linha da wallet antes de ler/recalcular:
+
+- `WagerTransactionService.process` (submit HTTP+SQS): lock → **re-checagem de idempotência sob o lock** → aplica regras → wallet+ledger+wager+inbox+outbox num único commit;
+- `reprocessOne` (worker `PENDING_REFERENCE`) e a resolução on-arrival (`resolveDependents`) reutilizam o mesmo lock da mesma wallet;
+- `reconcile` lê com `FOR SHARE` — como todo escritor trava `FOR UPDATE` na mesma linha antes de tocar o ledger, saldo/ledger não mudam durante a reconstrução;
+- uniques no schema (`wager(provider,external)`, `wager(provider,idempotency)`, `ledger(transaction_id)`, `wallet(player,currency)`) são a **rede de segurança** para corridas que não passam pelo lock (ex.: criação de wallet duplicada).
+
+**Por que pessimista e não otimista (`version`)?** Uma liquidação não é um update condicionado único: é wallet + entry de ledger + estado da transação + (inbox/outbox) **na mesma transação**. Lock otimista exigiria CAS condicionado no `balance`/`version` + retry de toda a transação multi-tabela, com falhas não-determinísticas e re-execução de efeitos colaterais. A contenção por wallet de jogador é rara e curta (ms); o row lock serializa sem lost update e sem loop de retry. `wallet.version` permanece coluna **plain** (auditoria; sem `@Version` do ORM — nada de dupla contagem). §5.6 (sem lock global) respeitado: a granularidade é a linha da wallet. Ordenação/dedup do broker são **otimização**; o banco é a fonte da verdade (§5.3, §8).
+
+**Cenário obrigatório §8 e demais corridas verificados por e2e real** (`test/concurrency.e2e.test.ts`, Postgres dedicado, paralelismo real via `Promise.all` de transações concorrentes):
+- wallet `100.00`, duas apostas `80.00` simultâneas → exatamente um `PROCESSED`, um `REJECTED INSUFFICIENT_FUNDS`, saldo final `20.00`, **um** débito no ledger, `version=2`, sem débito duplicado (estável em 3 execuções);
+- mesma aposta **50× em paralelo** → 1 `PROCESSED` novo + 49 replays (`idempotentReplay`), 1 linha, 1 débito, saldo `90.00`;
+- 12 wallets distintas em paralelo → cada uma com seu débito/saldo corretos (sem cross-talk);
+- dois `REFUND` concorrentes da mesma `BET` → um `PROCESSED`, um `REJECTED REFERENCE_ALREADY_REVERSED`, exatamente um crédito, saldo `100.00`.
+
+(Testes de múltiplos processos/instâncias e crash-after-commit pertencem à matriz da Fase 7, §13.)

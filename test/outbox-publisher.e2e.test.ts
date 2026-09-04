@@ -189,11 +189,9 @@ describe('transactional outbox publisher (e2e, real Postgres + Ministack)', () =
   }
 
   async function rowsById(ids: string[]): Promise<OutboxRow[]> {
-    return (await orm.em
-      .fork()
-      .find(OutboxMessageEntity, {
-        id: { $in: ids },
-      })) as unknown as OutboxRow[];
+    return (await orm.em.fork().find(OutboxMessageEntity, {
+      id: { $in: ids },
+    })) as unknown as OutboxRow[];
   }
 
   it('publishes every pending event once and is idempotent on the next run', async () => {
