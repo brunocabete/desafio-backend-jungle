@@ -3,7 +3,9 @@ import { getCorrelationId } from '../correlation/correlation-id.context.js';
 
 type LogLevel = 'debug' | 'verbose' | 'info' | 'warn' | 'error' | 'fatal';
 
-interface LogRecord {
+type StructuredFields = Record<string, unknown>;
+
+interface LogRecord extends StructuredFields {
   ts: string;
   level: LogLevel;
   pid: number;
@@ -13,12 +15,59 @@ interface LogRecord {
   stack?: string;
 }
 
-function describe(message: unknown): { msg: string; stack?: string } {
+const RESERVED_FIELDS = new Set([
+  'ts',
+  'level',
+  'pid',
+  'ctx',
+  'correlationId',
+  'msg',
+  'stack',
+]);
+
+function isStructuredMessage(message: unknown): message is StructuredFields {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    !Array.isArray(message) &&
+    !(message instanceof Error)
+  );
+}
+
+function describe(message: unknown): {
+  msg: string;
+  stack?: string;
+  fields?: StructuredFields;
+} {
   if (message instanceof Error) {
     return { msg: message.message, stack: message.stack };
   }
-  if (typeof message === 'object' && message !== null) {
-    return { msg: JSON.stringify(message) };
+  if (isStructuredMessage(message)) {
+    const fields: StructuredFields = {};
+    for (const [key, value] of Object.entries(message)) {
+      if (RESERVED_FIELDS.has(key)) {
+        continue;
+      }
+      if (
+        value === null ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+      ) {
+        fields[key] = value;
+      }
+    }
+    const explicit = message.msg;
+    const fallback = message.event;
+    return {
+      msg:
+        typeof explicit === 'string'
+          ? explicit
+          : typeof fallback === 'string'
+            ? fallback
+            : '',
+      fields,
+    };
   }
   return { msg: String(message) };
 }
@@ -74,6 +123,7 @@ export class JsonLogger implements LoggerService {
       ...((described.stack ?? paramStack)
         ? { stack: described.stack ?? paramStack }
         : {}),
+      ...described.fields,
     };
 
     const line = JSON.stringify(record);

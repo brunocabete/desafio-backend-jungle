@@ -12,6 +12,7 @@ import {
   LockWaitTimeoutException,
 } from '@mikro-orm/core';
 import type { ApiErrorCode } from './api-error.js';
+import { METRIC_NAMES, MetricsService } from '../metrics/metrics.service.js';
 
 export interface ErrorStatusMapping {
   status: number;
@@ -64,6 +65,16 @@ export function mapUnhandledError(error: unknown): ErrorStatusMapping {
   return { status: FATAL_HTTP, code: 'INTERNAL_ERROR' };
 }
 
+export function isLockContentionError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    hasCause(error, LockWaitTimeoutException) ||
+    hasCause(error, DeadlockException)
+  );
+}
+
 interface ApiErrorBody {
   statusCode: number;
   code: string;
@@ -78,6 +89,8 @@ const FALLBACK_MESSAGE: Record<number, string> = {
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(HttpExceptionFilter.name);
+
+  constructor(private readonly metrics?: MetricsService) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
@@ -97,6 +110,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const name = exception instanceof Error ? exception.name : 'Error';
     const detail =
       exception instanceof Error ? exception.message : String(exception);
+    if (isLockContentionError(exception)) {
+      this.metrics?.increment(METRIC_NAMES.dbLockConflicts);
+    }
     this.logger.error(
       `unhandled ${name}: ${detail}`,
       exception instanceof Error ? exception.stack : undefined,

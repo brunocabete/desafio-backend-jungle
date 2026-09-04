@@ -505,3 +505,29 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 - dois `REFUND` concorrentes da mesma `BET` → um `PROCESSED`, um `REJECTED REFERENCE_ALREADY_REVERSED`, exatamente um crédito, saldo `100.00`.
 
 (Testes de múltiplos processos/instâncias e crash-after-commit pertencem à matriz da Fase 7, §13.)
+
+---
+
+## 26. Fase 6 — Observability (§12)
+
+**Logs estruturados com os campos do §12** (`src/common/logging/json.logger.ts`)
+- `JsonLogger` passou a aceitar **mensagem-objeto**: campos primitivos de topo são achatados no record JSON (ex.: `event`, `transactionId`, `walletId`, `providerId`, `status`, `messageId`, `failureCode`), com `msg` (fallback para `event`), `correlationId` e `ctx` preservados. Chaves reservadas (`ts/level/pid/ctx/correlationId/msg/stack`) nunca são sobrescritas por campos do chamador.
+- `WagerTransactionService.recordSettlement` loga **uma linha por liquidação** com `event: 'wager.settled'`, `transactionId/walletId/providerId/status/idempotentReplay` (+`failureCode` em rejeições) — **sem valores monetários nem payload completo** (segurança §12).
+- Consumer SQS: cada mensagem é processada sob `runWithCorrelationId(messageId)` → o `correlationId` dos logs do fluxo SQS **é o `messageId`** (§10); log estruturado `wager.message.settled` com os mesmos campos.
+
+**Métricas (§12 item 2) — sem dependência nova**
+- `MetricsService` estendido: contadores **com labels**, gauges e histograma; `src/common/metrics/prometheus.ts` expõe formatação Prometheus text pura (`# TYPE`, `_bucket{le}/_sum/_count`) via `GET /metrics` (`MetricsController`, text/plain, aberto como health).
+- Contadores/gauges instrumentados:
+  - `wager_transactions_total{status}` e `wager_duplicates_total` (+ histograma `wager_process_duration_ms`) em `recordSettlement` (cobre HTTP e SQS — mesmo use case);
+  - `outbox_publish_retries_total` em `scheduleRetry` do publisher (só quando o retry foi efetivamente agendado); gauges `outbox_pending` e `outbox_lag_seconds` atualizados a cada tick do publisher (query agregada);
+  - `sqs_transient_retries_total` e `messages_moved_to_dlq_total` no consumer SQS (`routeFailure`);
+  - `db_lock_conflicts_total` no `HttpExceptionFilter` quando classifica `LockWaitTimeout`/`Deadlock` (métrica de lock conflicts do §12);
+  - legado `wallet_reconciliation_*` preservado (`snapshot()` segue retornando contadores sem labels).
+- Histograma com buckets fixos (5ms→10s). Percentis aproximáveis a partir dos buckets; sem `prom-client`/dashboard (opcional no §12).
+
+**Readiness (item 3)**: decidido = endpoint `/health/ready` (já testado, PG+SQS) + cobertura e2e; **sem** serviço `app` no compose (não há Dockerfile no repo — adicionar container seria infra fora do desafio). O probe real (k8s/compose) consumiria esse endpoint.
+
+**Testes**: unit de `JsonLogger` (fields), `prometheus.ts` (labels/escaping/histograma) e `MetricsService` (labeled counters/gauges/hist); consumer conta retry/DLQ; **e2e** `test/metrics.e2e.test.ts`: após BET+replay+rejeição+reconciliação, `GET /metrics` expõe `wager_transactions_total{status=...}`, `wager_duplicates_total`, histograma com `_count>0` e reconciliação.
+
+### Pendências
+- Índice parcial único de single-reversal: **agendado para o início da Fase 7** (schema + e2e de reversões), conforme acordado.

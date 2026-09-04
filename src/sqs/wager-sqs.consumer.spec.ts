@@ -15,6 +15,10 @@ import {
   WagerSqsConsumerService,
   type ConsumeAction,
 } from './wager-sqs.consumer.js';
+import {
+  METRIC_NAMES,
+  MetricsService,
+} from '../common/metrics/metrics.service.js';
 import type {
   MoveToDlqInput,
   SqsReceivedMessage,
@@ -80,7 +84,10 @@ function processedView(): WagerSubmitView {
 }
 
 describe('WagerSqsConsumerService.handleMessage', () => {
-  function subject(submit: WagerTransactionService['submit']): {
+  function subject(
+    submit: WagerTransactionService['submit'],
+    metrics?: MetricsService,
+  ): {
     consumer: WagerSqsConsumerService;
     gateway: FakeGateway;
     submitCalls: Parameters<WagerTransactionService['submit']>[];
@@ -96,7 +103,7 @@ describe('WagerSqsConsumerService.handleMessage', () => {
         return submit(request, inbox);
       },
     } as unknown as WagerTransactionService;
-    const consumer = new WagerSqsConsumerService(fakeService, gateway);
+    const consumer = new WagerSqsConsumerService(fakeService, gateway, metrics);
     return { consumer, gateway, submitCalls };
   }
 
@@ -186,6 +193,25 @@ describe('WagerSqsConsumerService.handleMessage', () => {
     expect(action).toBe('dlq');
     expect(gateway.dlqed).toHaveLength(1);
     expect(gateway.acked).toHaveLength(0);
+  });
+
+  it('counts transient retries and DLQ moves on the metrics service', async () => {
+    const metrics = new MetricsService();
+    const retrySubject = subject(async () => {
+      throw new WagerTransactionNotFoundError('wallet not found');
+    }, metrics);
+    await retrySubject.consumer.handleMessage(received());
+    expect(metrics.get(METRIC_NAMES.sqsTransientRetries)).toBe(1);
+    expect(metrics.get(METRIC_NAMES.messagesMovedToDlq)).toBe(0);
+
+    const dlqSubject = subject(async () => {
+      throw new WagerTransactionNotFoundError('wallet not found');
+    }, metrics);
+    await dlqSubject.consumer.handleMessage(
+      received({ receiveCount: SQS_MAX_RECEIVE_COUNT }),
+    );
+    expect(metrics.get(METRIC_NAMES.messagesMovedToDlq)).toBe(1);
+    expect(metrics.get(METRIC_NAMES.sqsTransientRetries)).toBe(1);
   });
 });
 

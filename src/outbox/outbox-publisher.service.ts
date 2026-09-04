@@ -9,6 +9,10 @@ import {
   OUTBOX_PUBLISHER,
   type OutboxPublisherGateway,
 } from './outbox-publisher.gateway.js';
+import {
+  METRIC_NAMES,
+  MetricsService,
+} from '../common/metrics/metrics.service.js';
 
 export const OUTBOX_DEFAULT_BATCH = 100;
 export const OUTBOX_DEFAULT_POLL_MS = 1_000;
@@ -51,6 +55,7 @@ export class OutboxPublisherService {
   constructor(
     private readonly orm: MikroORM,
     @Inject(OUTBOX_PUBLISHER) private readonly gateway: OutboxPublisherGateway,
+    private readonly metrics?: MetricsService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -156,13 +161,16 @@ export class OutboxPublisherService {
     const retryAt = new Date(
       now.getTime() + outboxRetryDelayMs(claimedAttempts),
     );
-    await em
+    const affected = await em
       .getConnection()
       .execute(
         `update "outbox_message" set "next_attempt_at" = ? where "id" = ? and "published_at" is null and "attempts" = ?`,
         [retryAt, rowId, claimedAttempts],
         'run',
       );
+    if (Number(affected) > 0) {
+      this.metrics?.increment(METRIC_NAMES.outboxPublishRetries);
+    }
   }
 
   /**
@@ -192,6 +200,7 @@ export class OutboxPublisherService {
     this.running = true;
     try {
       const stats = await this.publishDue();
+      await this.setOutboxGauges();
       if (stats.published > 0) {
         this.logger.log(
           `outbox publisher: published ${stats.published}/${stats.due} event(s)`,
@@ -208,5 +217,27 @@ export class OutboxPublisherService {
     } finally {
       this.running = false;
     }
+  }
+
+  private async setOutboxGauges(): Promise<void> {
+    if (!this.metrics) {
+      return;
+    }
+    const em = this.orm.em.fork();
+    const row = (await em
+      .getConnection()
+      .execute(
+        `select count(*) as pending, coalesce(extract(epoch from (now() - min("occurred_at"))), 0) as lag_seconds from "outbox_message" where "published_at" is null`,
+        [],
+        'get',
+      )) as unknown as {
+      pending: string | number;
+      lag_seconds: string | number;
+    };
+    this.metrics.setGauge(METRIC_NAMES.outboxPending, Number(row.pending));
+    this.metrics.setGauge(
+      METRIC_NAMES.outboxLagSeconds,
+      Number(row.lag_seconds),
+    );
   }
 }

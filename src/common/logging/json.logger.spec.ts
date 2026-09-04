@@ -39,4 +39,36 @@ describe('JsonLogger', () => {
     expect(record.msg).toBe('boom');
     expect(record.stack).toContain('Error: boom');
   });
+
+  it('flattens structured object fields next to msg and correlationId', () => {
+    const raw = capture('stdout', () => {
+      runWithCorrelationId('corr-sqs', () => {
+        new JsonLogger().log(
+          {
+            event: 'wager.settled',
+            transactionId: 'tx-1',
+            walletId: 'wallet-1',
+            providerId: 'provider-a',
+            status: 'PROCESSED',
+            idempotentReplay: false,
+          },
+          'WagerTransactionService',
+        );
+      });
+    });
+
+    const record = JSON.parse(raw) as Record<string, unknown>;
+    expect(record.level).toBe('info');
+    expect(record.msg).toBe('wager.settled');
+    expect(record.ctx).toBe('WagerTransactionService');
+    expect(record.correlationId).toBe('corr-sqs');
+    expect(record).toMatchObject({
+      event: 'wager.settled',
+      transactionId: 'tx-1',
+      walletId: 'wallet-1',
+      providerId: 'provider-a',
+      status: 'PROCESSED',
+      idempotentReplay: false,
+    });
+  });
 });

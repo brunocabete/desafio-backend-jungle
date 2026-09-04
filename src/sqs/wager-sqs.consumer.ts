@@ -20,6 +20,11 @@ import {
   type WagerSqsGateway,
   WAGER_SQS_GATEWAY,
 } from './wager-sqs.gateway.js';
+import {
+  METRIC_NAMES,
+  MetricsService,
+} from '../common/metrics/metrics.service.js';
+import { runWithCorrelationId } from '../common/correlation/correlation-id.context.js';
 
 export const SQS_MAX_RECEIVE_COUNT = 5;
 export const SQS_DEFAULT_POLL_MS = 1_000;
@@ -58,6 +63,7 @@ export class WagerSqsConsumerService
   constructor(
     private readonly wagerService: WagerTransactionService,
     @Inject(WAGER_SQS_GATEWAY) private readonly gateway: WagerSqsGateway,
+    private readonly metrics?: MetricsService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -115,15 +121,27 @@ export class WagerSqsConsumerService
     }
 
     try {
-      const view = await this.wagerService.submit(parsed.data, {
-        consumerName: WAGER_CONSUMER_NAME,
-        messageId: parsed.messageId,
-        payloadHash: parsed.payloadHash,
+      await runWithCorrelationId(parsed.messageId, async () => {
+        const settled = await this.wagerService.submit(parsed.data, {
+          consumerName: WAGER_CONSUMER_NAME,
+          messageId: parsed.messageId,
+          payloadHash: parsed.payloadHash,
+        });
+        await this.gateway.ack(message.receiptHandle);
+        this.logger.log(
+          {
+            event: 'wager.message.settled',
+            messageId: parsed.messageId,
+            transactionId: settled.transactionId,
+            walletId: parsed.data.walletId,
+            providerId: parsed.data.providerId,
+            status: settled.status,
+            idempotentReplay: settled.idempotentReplay,
+          },
+          WagerSqsConsumerService.name,
+        );
+        return settled;
       });
-      await this.gateway.ack(message.receiptHandle);
-      this.logger.log(
-        `wager message '${parsed.messageId}' settled with status ${view.status} (transaction ${view.transactionId})`,
-      );
       return 'ack';
     } catch (error) {
       const action = consumeActionForFailure(error, message.receiveCount);
@@ -177,6 +195,7 @@ export class WagerSqsConsumerService
   ): Promise<void> {
     const reason = error instanceof Error ? error.message : String(error);
     if (action === 'dlq') {
+      this.metrics?.increment(METRIC_NAMES.messagesMovedToDlq);
       await this.gateway.moveToDlq({
         receiptHandle: message.receiptHandle,
         systemMessageId: message.systemMessageId,
@@ -188,6 +207,7 @@ export class WagerSqsConsumerService
       );
       return;
     }
+    this.metrics?.increment(METRIC_NAMES.sqsTransientRetries);
     this.logger.warn(
       `transient failure for SQS message '${message.systemMessageId}' (receive ${message.receiveCount}): ${reason} — waiting for redelivery`,
     );

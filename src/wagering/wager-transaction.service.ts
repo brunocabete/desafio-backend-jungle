@@ -4,7 +4,7 @@ import {
   MikroORM,
   UniqueConstraintViolationException,
 } from '@mikro-orm/core';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   Money,
   DEFAULT_CURRENCY,
@@ -45,6 +45,10 @@ import {
   persistOutboxEvents,
   settlementEvents,
 } from '../common/outbox/transactional-outbox.js';
+import {
+  METRIC_NAMES,
+  MetricsService,
+} from '../common/metrics/metrics.service.js';
 
 const MAX_PROVIDER_ID = 64;
 const MAX_EXTERNAL_ID = 128;
@@ -473,13 +477,28 @@ function isIdempotencyConstraintViolation(
 
 @Injectable()
 export class WagerTransactionService {
-  constructor(private readonly orm: MikroORM) {}
+  private readonly logger = new Logger(WagerTransactionService.name);
+
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly metrics?: MetricsService,
+  ) {}
 
   async submit(
     request: unknown,
     inbox?: SqsInboxContext,
   ): Promise<WagerSubmitView> {
     const normalized = normalizeWagerSubmit(request);
+    const startedAt = Date.now();
+    const view = await this.submitNormalized(normalized, inbox);
+    this.recordSettlement(view, startedAt, normalized);
+    return view;
+  }
+
+  private async submitNormalized(
+    normalized: NormalizedWagerSubmit,
+    inbox?: SqsInboxContext,
+  ): Promise<WagerSubmitView> {
     if (inbox) {
       try {
         return await this.process(normalized, inbox);
@@ -505,6 +524,38 @@ export class WagerTransactionService {
         return this.resolveExisting(normalized);
       }
       throw error;
+    }
+  }
+
+  private recordSettlement(
+    view: WagerSubmitView,
+    startedAt: number,
+    normalized: NormalizedWagerSubmit,
+  ): void {
+    const durationMs = Date.now() - startedAt;
+    this.metrics?.observeHistogram(
+      METRIC_NAMES.wagerProcessDurationMs,
+      durationMs,
+    );
+    this.metrics?.increment(METRIC_NAMES.wagerTransactionsTotal, 1, {
+      status: view.status,
+    });
+    if (view.idempotentReplay) {
+      this.metrics?.increment(METRIC_NAMES.wagerDuplicates);
+    }
+    const fields = {
+      event: 'wager.settled',
+      transactionId: view.transactionId,
+      walletId: normalized.walletId,
+      providerId: normalized.providerId,
+      status: view.status,
+      idempotentReplay: view.idempotentReplay,
+      ...(view.failureCode ? { failureCode: view.failureCode } : {}),
+    };
+    if (view.status === WagerTransactionStatus.Rejected) {
+      this.logger.warn(fields, WagerTransactionService.name);
+    } else {
+      this.logger.log(fields, WagerTransactionService.name);
     }
   }
 
