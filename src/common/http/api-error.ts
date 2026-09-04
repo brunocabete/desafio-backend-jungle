@@ -6,6 +6,7 @@ export type ApiErrorCode =
   | 'IDEMPOTENCY_CONFLICT'
   | 'WALLET_NOT_FOUND'
   | 'TRANSACTION_NOT_FOUND'
+  | 'SERVICE_UNAVAILABLE'
   | 'INTERNAL_ERROR';
 
 interface ApiErrorBody {

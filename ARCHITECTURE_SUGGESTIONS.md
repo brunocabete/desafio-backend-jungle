@@ -353,3 +353,43 @@ SPECS §9: comparar saldo **materializado** vs **reconstruído pelo ledger**; di
 - **Log de divergência**: `warn` com `walletId`, `storedBalance`, `calculatedBalance`, `difference` e `checkedEntries`. Hoje via `Nest Logger` (mensagem textual); campos **estruturados de topo** (`correlationId` + IDs) evoluem na Fase 6 junto do `JsonLogger`.
 - **Nunca corrige**: no caminho de divergência nada é escrito; a resposta sinaliza `consistent: false` e uma nova chamada volta a divergir.
 - Testes: unit de `MetricsService` e de `buildReconciliationView`; **e2e real** `test/reconciliation.e2e.test.ts` (Postgres dedicado, `AppModule`): wallet consistente pós-OPENING/BET/WIN, wallet zerada sem entries, divergência forçada por `UPDATE` direto no `balance_amount` (simulando corrupção) → `consistent: false`, diferença correta, saldo armazenado **inalterado** após a chamada, métrica de divergência incrementada.
+
+---
+
+## 19. Fase 3, item 6 — Health checks (SPECS §9)
+
+- **`GET /health/live`** → `200 {status:'ok'}` sempre que o processo responde (liveness: sem dependências).
+- **`GET /health/ready`** → readiness **Postgres + SQS**, sem auth:
+  - Postgres: `select 1` via `em.getConnection().execute(...)`;
+  - SQS: cliente **`SQSClient`** (`@aws-sdk/client-sqs`, novo dep — também será usado pelo consumer da Fase 4) fazendo `GetQueueUrl` na fila `AWS_SQS_QUEUE`, com **timeout de 3s** (`Promise.race`), endpoint/creds vindos de `AWS_ENDPOINT_URL`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (`sqsEnv()`, parser puro). `client.destroy()` no `finally`.
+- **Resposta**: `200 {status:'ok', checks:{database:'up', sqs:'up'}, errors:{}}`; se qualquer dependência falhar → `503 {status:'error', checks:{...}, errors:{database?|sqs?: mensagem}}`. `summarizeReadiness()` é **função pura** (unit-testada).
+- **Módulo**: `src/health/` (`HealthModule` no `AppModule`); usa `MikroORM` (global do `forRoot`). O probe de readiness é reaproveitado como probe real na Fase 6.
+- Falta de config de SQS (`AWS_SQS_QUEUE`) → dependência marcada **down** (readiness 503), nunca "falso up".
+- Testes: unit (sumarizador + parser de env) + **e2e real** `test/health.e2e.test.ts`: live 200, ready 200 com PG+SQS up (compose), e 503 com `sqs:'down'` ao remover `AWS_SQS_QUEUE` do processo.
+
+---
+
+## 20. Fase 3, item 7 — Mapeamento consistente de status (SPECS §9)
+
+Centralização + classificação explícita, eliminando ambiguidade entre "payload inválido", "conflito", "rejeição de negócio", "aceite pendente" e "falha transitória de infra".
+
+- **Filtro global** `HttpExceptionFilter` (`src/common/http/http-exception.filter.ts`, registrado via `APP_FILTER` no `AppModule`):
+  - `HttpException` com corpo já no shape `ApiErrorBody` → **passa inalterado** (cada endpoint mantém seu `statusCode/code/message`);
+  - erro não tratado → **classificado**: `isTransientInfrastructureError()` considera `ConnectionException`, `LockWaitTimeoutException` e `DeadlockException` (por `instanceof`, inclusive na cadeia de `cause`) como **transitório** → `503 SERVICE_UNAVAILABLE`; demais → `500 INTERNAL_ERROR`. **Nunca** vaza a mensagem interna (só loga; resposta usa fallback genérico). Violações de constraint NÃO são transitórias (são mapeadas perto da borda, ex. unique → 409).
+  - Classificador/mapa são funções puras exportadas (unit-testadas com as exceções reais do MikroORM).
+- **Tabela consolidada** (códigos estáveis do `ApiErrorCode`):
+
+| Situação | HTTP | `code` | Onde |
+|---|---|---|---|
+| Payload/cursor/limit inválidos | 400 | `INVALID_PAYLOAD` | wallets, wagering, ledger |
+| Recurso inexistente (wallet/transação) | 404 | `WALLET_NOT_FOUND` / `TRANSACTION_NOT_FOUND` | GETs, submit |
+| Conflito de idempotência / wallet duplicada | 409 | `IDEMPOTENCY_CONFLICT` / `WALLET_ALREADY_EXISTS` | submit, POST /wallets |
+| Rejeição de negócio (transação `REJECTED` persistida) | 422 | corpo com `status/failureCode/balance/idempotentReplay` | POST /wagering |
+| Aceite com processamento pendente | 202 | corpo `PENDING_REFERENCE` | POST /wagering |
+| Processado / replay | 200 | corpo normal | POST /wagering |
+| Falha transitória de infraestrutura | 503 | `SERVICE_UNAVAILABLE` | filtro global |
+| Erro não classificado (programação) | 500 | `INTERNAL_ERROR` | filtro global |
+
+- Rejeição de negócio (422) e aceite pendente (202) são **resultados de negócio** (status setado no controller, corpo com o estado persistido), não erros — coerente com o resto da API.
+- **Autenticação (§2)**: decisão **adiada para o último item do projeto** (item 8); health continua aberto e fila tratada como canal interno confiável.
+- Testes: unit do classificador (transitório vs constraint vs erro comum) + e2e dos endpoints existentes já validam 400/404/409/422/202; health cobre 200/503.

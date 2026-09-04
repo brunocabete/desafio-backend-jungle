@@ -31,6 +31,7 @@
     "migration:down": "mikro-orm migration:down"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1126.0",
     "@mikro-orm/core": "^7.1.14",
     "@mikro-orm/migrations": "7.1.14",
     "@mikro-orm/nestjs": "^7.1.0",
