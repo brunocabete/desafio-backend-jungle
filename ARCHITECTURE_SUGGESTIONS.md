@@ -545,4 +545,21 @@ Milestone único porque um consumidor "correto" precisa de inbox + classificaç�
 - **Verificação**: `test/migrations.e2e.test.ts` agora também (a) confere o índice em `pg_indexes`; (b) BET + `REFUND` `PROCESSED` ok; (c) `ROLLBACK` `PROCESSED` do mesmo BET (kind diferente) ok; (d) `REFUND` `REJECTED` do mesmo BET (fora do predicado) ok; (e) 2º `REFUND` `PROCESSED` do mesmo BET → viola `uq_wager_single_reversal`; (f) `down({to: 0})` continua revertendo tudo. Enforcement também validado à mão no Postgres local. Combinado com os e2e de wagering/concurrency (dupla reversão concorrente e `REFUND`+`ROLLBACK` do mesmo BET), o schema é agora a última linha de defesa das regras 3–4 do §7.
 
 ### Pendências (Fase 7, demais passos do §13)
-- Multi-instância: **≥ 3 processos/instâncias simultâneos**; worker morto **depois do commit e antes do ack**; restart do serviço com **consistência final** (`balance == reconstrução do ledger`); retry + DLQ real; crash recovery. Opcional: `bun run test:load`.
+- Crash pós-commit/pré-ack e restart com consistência final — próximos passos; lista consolidada ao fim do §28.
+
+---
+
+## 28. Fase 7 — Matriz de concorrência com processos reais: ≥ 3 instâncias simultâneas (SPECS §13 item 3.4, §8)
+
+- **Problema**: o e2e de concorrência existente (`test/concurrency.e2e.test.ts`) provava as corridas com *uma* instância do serviço (várias `em.fork()` = várias conexões/transações, paralelismo SQL real). Faltava a prova explícita de **"três ou mais instâncias rodam simultaneamente"** (§8) — o cenário de uma solução que usa só lock em memória ou estado local por instância.
+- **Design**: cada "instância" é um **processo separado** (`bun <worker>` via `Bun.spawn`, `test/processes/concurrent-submitter.ts`) que sobe o **próprio `MikroORM`** (pool de conexões independente) e a **própria instância do use case compartilhado** (`WagerTransactionService`) contra o mesmo Postgres. O worker lê os parâmetros via env, dispara `N` submissões concorrentes e grava um resumo JSON num arquivo (`WORKER_OUT_FILE`) — stdout/stderr ficam irrelevantes para o pai (evita parsing frágil dos logs do Nest). Timestamps `startedAt/finishedAt` permitem ao teste **provar a sobreposição** (paralelismo real, não sequencial).
+  - Justificativa de não subir o app Nest HTTP completo por processo: transportes (HTTP/SQS) são otimização/ordenação — o §5.3/§8 já fixa que **o banco é a fonte da verdade** e a unidade de concorrência é a wallet; o que precisa de múltiplas instâncias é o caminho transacional, que é exatamente o que cada processo exercita. Manter Nest por processo tornaria o teste frágil e mais lento sem aumentar a validade da invariante.
+- **`test/multi-instance.e2e.test.ts`** (Postgres real dedicado `desafio_jungle_multi_instance_test_*`):
+  1. **Cenário obrigatório §8 entre 3 processos**: wallet `100.00`, cada processo dispara 2 apostas `80.00` concorrentes (6 no total) → exatamente **1** `PROCESSED`, **5** `REJECTED INSUFFICIENT_FUNDS`, saldo final `20.00`, `version=2`, **1** débito no ledger e reconstrução do ledger == `20.00`. Inclui `assertSimultaneous` (sobreposição temporal dos 3 workers).
+  2. **Wallets distintas em paralelo entre os 3 processos**: cada processo liquida sua própria wallet sem cross-talk (`75.00`, 1 débito, version 2 cada).
+  3. **Mesma aposta submetida pelos 3 processos ao mesmo tempo**: 1 linha `PROCESSED` nova + 2 replays (`idempotentReplay`), 1 débito, saldo `90.00` — idempotência persistente e unique `(provider, idempotency_key)` valendo **entre processos**.
+- Nota de infraestrutura do runner: o `bun test` executa os arquivos de teste **sequencialmente no mesmo processo** (verificado empiricamente), então env/filas por arquivo são isolados; os workers filhos herdam o env do pai e apontam para o DB dedicado do arquivo.
+- **Verificação**: `bun test ./test/multi-instance.e2e.test.ts` → 3 testes verdes (sobreposição confirmada); suíte completa unit 231 + e2e 68 verdes, lint e `tsc --noEmit` limpos.
+
+### Pendências (Fase 7, demais passos do §13)
+- Crash pós-commit/pré-ack e restart com consistência final ainda pendentes (workers reais + kill). Opcional: `bun run test:load`.
