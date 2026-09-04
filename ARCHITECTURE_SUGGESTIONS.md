@@ -393,3 +393,28 @@ Centralização + classificação explícita, eliminando ambiguidade entre "payl
 - Rejeição de negócio (422) e aceite pendente (202) são **resultados de negócio** (status setado no controller, corpo com o estado persistido), não erros — coerente com o resto da API.
 - **Autenticação (§2)**: decisão **adiada para o último item do projeto** (item 8); health continua aberto e fila tratada como canal interno confiável.
 - Testes: unit do classificador (transitório vs constraint vs erro comum) + e2e dos endpoints existentes já validam 400/404/409/422/202; health cobre 200/503.
+
+---
+
+## 21. Fase 4, item 1 — Transactional outbox: escrita atômica dos eventos (§11)
+
+O que era persistido na Fase 3 (transação + saldo + ledger, e no reprocessamento de `PENDING_REFERENCE`) agora **também grava os eventos de integração na `outbox_message`, dentro da MESMA SQL transaction** — nada é publicado antes do commit (§5.4). O publisher (worker de Fase 4 item 5) só lê linhas comitadas.
+
+- **Seleção de eventos = função pura** `settlementEvents(transaction, beforeStatus, wallet, entry?, ctx)` em `src/common/outbox/transactional-outbox.ts` (novo diretório `common/outbox`, cross-cutting de persistência — não é domínio). Regras (espelham a tabela "eventos mínimos" do §11):
+  - transação **PROCESSED** → `WagerTransactionProcessed`; se gerou entry de ledger → também `WalletBalanceChanged` (o `balanceAfter` do event vem de `entry.balanceAfter`, não do snapshot do wallet);
+  - transação **REJECTED** (regra de negócio) → `WagerTransactionRejected` (REJECTED nunca move saldo → sem `WalletBalanceChanged`);
+  - **PENDING → PENDING_REFERENCE** (primeira vez) → `WagerTransactionPendingReference`. Reprocessamento que **permanece** pendente não re-emite (dedup por transição, não por tentativa) — evita duplicar evento a cada backoff do worker.
+  - `LOSS` PROCESSED → só `WagerTransactionProcessed`, sem `balanceAfter` (não muda saldo).
+- **Persistência**: `persistOutboxEvents(em, events)` mapeia cada `IntegrationEvent` para a linha da `outbox_message` via `OutboxMessage.enqueue` (payload = envelope `toJSON()` versionado; `attempts=0`, `published_at=NULL`, sem FK para o agregado — payload JSON estável).
+- **Pontos de emissão** (todos dentro de `em.transactional`, já sob `FOR UPDATE` da wallet):
+  1. `WagerTransactionService.process` (submit compartilhado) — via `persistSettlement`, que ganhou o parâmetro `beforeStatus`;
+  2. `resolveDependents` (resolução on-arrival de dependentes `PENDING_REFERENCE`, mesma transação da referência que chega);
+  3. `WagerTransactionService.reprocessOne` (worker): resolução → idem; **expiração TTL/limite** (`UNRESOLVED_REFERENCE`) → `WagerTransactionRejected` na mesma transação;
+  4. `WalletService.persistOpening` (abertura com saldo > 0) → `WagerTransactionProcessed` (OPENING é transação aplicada) + `WalletBalanceChanged` (saldo 0 → X). Wallet zerada não gera evento.
+- **`EventContext`**: `currentEventContext(occurredAt?)` lê o `correlationId` do `AsyncLocalStorage` (middleware HTTP) com **fallback para `randomUUID()`** — chamadas diretas ao serviço (testes/worker) continuam com correlação própria. `occurredAt` default `now` da liquidação.
+- **Dedup estrutural**: eventos só existem quando a transação **transiciona** para terminal/pendente; replay idempotente e redelivery não duplicam (o transição guard já rejeita reprocessamento de terminal). Nenhum índice/coluna nova no schema para a Fase 4 item 1.
+- Testes: unit de `settlementEvents` (processed/entry, LOSS, rejected, PENDING→PENDING_REFERENCE vs re-processamento pendente, OPENING) + **e2e real** `test/outbox.e2e.test.ts` (Postgres dedicado): abertura (events de OPENING + saldo; zerada = nenhum), BET + **replay sem duplicar**, LOSS sem evento de saldo, rejeição só `WagerTransactionRejected`, REFUND `PENDING_REFERENCE` → resolução on-arrival com eventos na transação de liquidação, e expiração pelo worker → `WagerTransactionRejected` **uma única vez** (e re-run não duplica).
+
+### Pendências (Fases 4, itens 2–5)
+- Inbox persistente entra quando houver consumidor SQS (item 2/3): a linha de `inbox_message` será inserida no mesmo `em.transactional` do `submit`, tornando §11 ("inbox quando a entrada for SQS") real.
+- Índice parcial único de single-reversal no schema; publisher da outbox com claim atômico (item 5); métricas de outbox lag/duplicatas (item da Fase 6).

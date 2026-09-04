@@ -39,6 +39,11 @@ import {
 import { WalletEntity } from '../db/entities/wallet.entity.js';
 import { WagerTransactionEntity } from '../db/entities/wager-transaction.entity.js';
 import { WalletLedgerEntryEntity } from '../db/entities/wallet-ledger-entry.entity.js';
+import {
+  currentEventContext,
+  persistOutboxEvents,
+  settlementEvents,
+} from '../common/outbox/transactional-outbox.js';
 
 const MAX_PROVIDER_ID = 64;
 const MAX_EXTERNAL_ID = 128;
@@ -598,6 +603,7 @@ export class WagerTransactionService {
         transaction,
         result,
         now,
+        WagerTransactionStatus.Pending,
       );
 
       return this.viewFor(wallet, transaction, false);
@@ -611,11 +617,23 @@ export class WagerTransactionService {
     transaction: WagerTransaction,
     result: WagerApplyResult,
     now: Date,
+    beforeStatus: WagerTransactionStatus,
   ): Promise<void> {
     this.syncWalletRow(walletRow, wallet);
-    if (result.kind === 'processed' && result.entry) {
-      em.create(WalletLedgerEntryEntity, toLedgerRowProps(result.entry));
+    const entry = result.kind === 'processed' ? result.entry : undefined;
+    if (entry) {
+      em.create(WalletLedgerEntryEntity, toLedgerRowProps(entry));
     }
+    persistOutboxEvents(
+      em,
+      settlementEvents({
+        transaction,
+        beforeStatus,
+        wallet,
+        entry,
+        ctx: currentEventContext(now),
+      }),
+    );
     if (transaction.isTerminal() && isReferenceable(transaction.kind)) {
       await em.flush();
       await this.resolveDependents(em, walletRow, wallet, transaction, now);
@@ -725,6 +743,15 @@ export class WagerTransactionService {
         if (expired) {
           transaction.reject(FailureCode.UNRESOLVED_REFERENCE);
           this.syncWagerRow(current, transaction);
+          persistOutboxEvents(
+            em,
+            settlementEvents({
+              transaction,
+              beforeStatus: WagerTransactionStatus.PendingReference,
+              wallet,
+              ctx: currentEventContext(now),
+            }),
+          );
           await em.flush();
           return true;
         }
@@ -743,6 +770,7 @@ export class WagerTransactionService {
         transaction,
         result,
         now,
+        WagerTransactionStatus.PendingReference,
       );
       return true;
     });
@@ -806,6 +834,17 @@ export class WagerTransactionService {
             queue.push(dependent);
           }
         }
+
+        persistOutboxEvents(
+          em,
+          settlementEvents({
+            transaction: dependent,
+            beforeStatus: WagerTransactionStatus.PendingReference,
+            wallet,
+            entry: result.kind === 'processed' ? result.entry : undefined,
+            ctx: currentEventContext(now),
+          }),
+        );
       }
     }
   }

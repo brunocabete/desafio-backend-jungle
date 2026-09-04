@@ -18,8 +18,14 @@ import {
 import {
   WagerTransaction,
   WagerTransactionKind,
+  WagerTransactionStatus,
 } from '../domain/wager-transaction/wager-transaction.js';
 import { wagerPayloadHash } from '../domain/wager/idempotency.js';
+import {
+  currentEventContext,
+  persistOutboxEvents,
+  settlementEvents,
+} from '../common/outbox/transactional-outbox.js';
 import {
   METRIC_NAMES,
   MetricsService,
@@ -465,5 +471,15 @@ export class WalletService {
       balanceAfterAmount: entry.balanceAfter.toJSON().amount,
       createdAt: entry.createdAt,
     });
+    persistOutboxEvents(
+      em,
+      settlementEvents({
+        transaction: opening,
+        beforeStatus: WagerTransactionStatus.Pending,
+        wallet,
+        entry,
+        ctx: currentEventContext(wallet.createdAt),
+      }),
+    );
   }
 }
